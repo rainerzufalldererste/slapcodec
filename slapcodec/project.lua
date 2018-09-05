@@ -41,7 +41,10 @@ project(ProjectName)
 filter {}
 configuration {}
 
-linkoptions { "3rdParty/libjpeg-turbo/lib/turbojpeg-static.lib" }
+links { "3rdParty/libjpeg-turbo/lib/turbojpeg-static.lib" }
+links { "3rdParty/libjpeg-turbo/lib/turbojpeg.lib" }
+links { "3rdParty/libjpeg-turbo/lib/jpeg-static.lib" }
+links { "3rdParty/libjpeg-turbo/lib/jpeg.lib" }
 
 warnings "Extra"
 

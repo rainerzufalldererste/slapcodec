@@ -10,5 +10,9 @@
 
 int main(void)
 {
+  slapFileWriter *pFileWriter = slapInitFileWriter("file", 1024, 1024, 1);
+  slapFinalizeFileWriter(pFileWriter);
+  slapDestroyFileWriter(&pFileWriter);
+
   return 0;
 }
