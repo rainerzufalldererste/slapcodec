@@ -17,7 +17,7 @@ project(ProjectName)
   
   filter { }
   
-  defines { "_CRT_SECURE_NO_WARNINGS", "SSE2", "GLEW_STATIC" }
+  defines { "_CRT_SECURE_NO_WARNINGS", "SSE2" }
   
   objdir "intermediate/obj"
 
@@ -28,8 +28,7 @@ project(ProjectName)
   includedirs { "include" }
   includedirs { "include/**" }
   includedirs { "3rdParty" }
-  includedirs { "3rdParty/GLFW/include" }
-  includedirs { "3rdParty/glew/include" }
+  includedirs { "3rdParty/libjpeg-turbo/include" }
 
   filter { "configurations:Debug", "system:Windows" }
     ignoredefaultlibraries { "libcmt" }
@@ -42,9 +41,7 @@ project(ProjectName)
 filter {}
 configuration {}
 
-linkoptions { "3rdParty/GLFW/lib/glfw3.lib" }
-linkoptions { "3rdParty/GLFW/lib/libglew32.lib" }
-linkoptions { "opengl32.lib", "glu32.lib" }
+linkoptions { "3rdParty/libjpeg-turbo/lib/turbojpeg-static.lib" }
 
 warnings "Extra"
 

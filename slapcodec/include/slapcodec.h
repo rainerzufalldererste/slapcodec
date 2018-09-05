@@ -10,27 +10,85 @@
 #define slapcodec_h__
 
 #include <stdint.h>
+#include <malloc.h>
+#include <memory.h>
+#include <stdio.h>
 
 #ifndef bool_t
 #define bool_t uint8_t
+#endif // !bool_t
+
+#ifndef IN
+#define IN
+#endif // !IN
+
+#ifndef OUT
+#define OUT
+#endif // !OUT
+
+#ifndef IN_OUT
+#define IN_OUT IN OUT
+#endif // !IN_OUT
+
+#define slapAlloc(Type, count) (Type *)malloc(sizeof(Type) * (count))
+#define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = 0; } } while (0)
+#define slapSetZero(ptr, Type) memset(ptr, sizeof(Type), 0)
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-enum slapResult
-{
-  slapSuccess,
-  slapError
-};
+  typedef enum slapResult
+  {
+    slapSuccess,
+    slapError_Generic,
+    slapError_ArgumentNull,
+    slapError_Compress_Internal,
+    slapError_FileError
+  } slapResult;
 
-typedef struct slapEncoder
-{
-  size_t frameIndex;
-  size_t iframeStep;
-  size_t resX;
-  size_t resY;
-  bool_t stereo;
-} slapEncoder;
+  typedef struct slapEncoder
+  {
+    size_t frameIndex;
+    size_t iframeStep;
+    size_t resX;
+    size_t resY;
+    bool_t stereo;
+    int quality;
+    void *pAdditionalData;
+  } slapEncoder;
 
-struct slapEncoder *slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
-void slapDestroyEncoder(struct slapEncoder *ppEncoder);
+  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder);
+
+  slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
+
+  // @param ppCompressedData should be NULL on when the first frame is added.
+  slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const size_t stride, OUT void **ppCompressedData, OUT size_t *pSize);
+
+#define SLAP_HEADER_BLOCK_SIZE 256
+
+  typedef struct slapFileWriter
+  {
+    FILE *pMainFile;
+    FILE *pHeaderFile;
+    uint64_t headerPosition;
+    uint64_t frameCount;
+    slapEncoder *pEncoder;
+    void *pData;
+    uint64_t frameSizeOffsets[SLAP_HEADER_BLOCK_SIZE];
+    size_t frameSizeOffsetIndex;
+  } slapFileWriter;
+
+  slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter);
+
+  slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter);
+
+  slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData, const size_t stride);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // slapcodec_h__

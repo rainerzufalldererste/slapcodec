@@ -263,3 +263,6 @@ __pycache__/
 # Project & Solution Files
 *.sln
 *.vcxpro*
+
+# Additional Rules
+slapcodec/lib/*
