@@ -1,0 +1,6 @@
+[submodule "premake"]
+	path = premake
+	url = https://github.com/rainerzufalldererste/premakeBuild
+[submodule "slapcodec/3rdParty/glew"]
+	path = slapcodec/3rdParty/glew
+	url = https://github.com/rainerzufalldererste/glewBuild.git
