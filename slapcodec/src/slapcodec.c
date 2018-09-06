@@ -9,9 +9,17 @@
 #include "slapcodec.h"
 #include "turbojpeg.h"
 
-slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
+#include <intrin.h>
+#include <emmintrin.h>
+#include <xmmintrin.h>
+
+slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags)
 {
+  if (sizeX & 31 || sizeY & 31) // must be multiple of 32.
+    return NULL;
+
   slapEncoder *pEncoder = slapAlloc(slapEncoder, 1);
+  size_t lowResHeight, lowResWidth;
 
   if (!pEncoder)
     goto epilogue;
@@ -21,10 +29,18 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bo
   pEncoder->resX = sizeX;
   pEncoder->resY = sizeY;
   pEncoder->iframeStep = 30;
-  pEncoder->stereo = isStereo3d;
+  pEncoder->mode.flagsPack = flags;
   pEncoder->quality = 75;
 
-  if (!isStereo3d)
+  lowResWidth = pEncoder->resX >> 3;
+  lowResHeight = pEncoder->resY >> 3;
+  
+  if (pEncoder->mode.flags.stereo)
+    lowResHeight >>= 1;
+
+  pEncoder->pLowResData = slapAlloc(uint8_t, lowResWidth * lowResHeight * 3 / 2);
+
+  if (!pEncoder->pLowResData)
     goto epilogue;
 
   pEncoder->pAdditionalData = tjInitCompress();
@@ -35,14 +51,27 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bo
   return pEncoder;
 
 epilogue:
+  if (pEncoder->pLowResData)
+    slapFreePtr(&pEncoder->pLowResData);
+
+  if (pEncoder->pAdditionalData)
+    tjDestroy(pEncoder->pAdditionalData);
+
   slapFreePtr(&pEncoder);
+
   return NULL;
 }
 
 void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
 {
   if (ppEncoder && *ppEncoder)
-    tjDestroy((*ppEncoder)->pAdditionalData);
+  {
+    if ((*ppEncoder)->pAdditionalData)
+      tjDestroy((*ppEncoder)->pAdditionalData);
+
+    if ((*ppEncoder)->pLowResData)
+      slapFreePtr(&(*ppEncoder)->pLowResData);
+  }
 
   slapFreePtr(ppEncoder);
 }
@@ -54,7 +83,7 @@ slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder)
   return slapSuccess;
 }
 
-slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const size_t stride, OUT void **ppCompressedData, OUT size_t *pSize)
+slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize)
 {
   slapResult result = slapSuccess;
 
@@ -64,16 +93,214 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const si
     goto epilogue;
   }
 
-  if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 4, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
+  if (pEncoder->mode.flags.encoder == 0)
   {
-    slapLog(tjGetErrorStr2(pEncoder->pAdditionalData));
-    result = slapError_Compress_Internal;
-    goto epilogue;
+    //size_t framesize = pEncoder->resX * pEncoder->resY;
+    uint8_t *pMainFrameY = (uint8_t *)pData;
+    //uint8_t *pMainFrameU = pMainFrameY + framesize;
+    //uint8_t *pMainFrameV = pMainFrameU + (framesize >> 2);
+
+    uint16_t *pSubFrameYUV = (uint16_t *)pEncoder->pLowResData;
+
+    size_t resXdiv16 = pEncoder->resX >> 4;
+    size_t sevenTimesResXDiv16 = resXdiv16 * 7;
+
+    __m128i *pCB0 = (__m128i *)pMainFrameY;
+    __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
+    __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
+    __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
+    __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
+    __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
+    __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
+    __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
+
+    __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (pEncoder->resY >> 1);
+    __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
+    __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
+    __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
+    __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
+    __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
+    __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
+    __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
+
+    __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+
+    for (size_t y = 0; y < (pEncoder->resY >> 1); y += 8)
+    {
+      for (size_t x = 0; x < pEncoder->resX; x += 16)
+      {
+        *pCB0_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+        *pCB1_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+        *pCB2_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+        *pCB3_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+        *pCB4_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+        *pCB5_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+        *pCB6_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+        *pCB7_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+        //
+        //__m128i v = _mm_bsrli_si128(*pCB0, 7);
+        //*pSubFrameYUV = *(uint16_t *)&v;
+        //
+        //int64_t loHi64[2];
+        //
+        //loHi64[0] = (uint64_t)(*pSubFrameYUV & 0xFF) * 0x0101010101010101;
+        //loHi64[1] = (uint64_t)((*pSubFrameYUV & 0xFF00) >> 8) * 0x0101010101010101;
+        //
+        //__m128i pickedValue = *(__m128i *)&loHi64;
+        //
+        *pCB0 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0, pickedValue), half);
+        *pCB1 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1, pickedValue), half);
+        *pCB2 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2, pickedValue), half);
+        *pCB3 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3, pickedValue), half);
+        *pCB4 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4, pickedValue), half);
+        *pCB5 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5, pickedValue), half);
+        *pCB6 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6, pickedValue), half);
+        *pCB7 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7, pickedValue), half);
+
+        pSubFrameYUV++;
+        pCB0++;
+        pCB1++;
+        pCB2++;
+        pCB3++;
+        pCB4++;
+        pCB5++;
+        pCB6++;
+        pCB7++;
+        pCB0_++;
+        pCB1_++;
+        pCB2_++;
+        pCB3_++;
+        pCB4_++;
+        pCB5_++;
+        pCB6_++;
+        pCB7_++;
+      }
+
+      pCB0 += sevenTimesResXDiv16;
+      pCB1 += sevenTimesResXDiv16;
+      pCB2 += sevenTimesResXDiv16;
+      pCB3 += sevenTimesResXDiv16;
+      pCB4 += sevenTimesResXDiv16;
+      pCB5 += sevenTimesResXDiv16;
+      pCB6 += sevenTimesResXDiv16;
+      pCB7 += sevenTimesResXDiv16;
+      pCB0_ += sevenTimesResXDiv16;
+      pCB1_ += sevenTimesResXDiv16;
+      pCB2_ += sevenTimesResXDiv16;
+      pCB3_ += sevenTimesResXDiv16;
+      pCB4_ += sevenTimesResXDiv16;
+      pCB5_ += sevenTimesResXDiv16;
+      pCB6_ += sevenTimesResXDiv16;
+      pCB7_ += sevenTimesResXDiv16;
+    }
+
+    size_t halfFrameDiv16Quarter = resXdiv16 * pEncoder->resY >> 3;
+    size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
+
+    int first = 1;
+    //chromaSubSampleBuffer:
+
+    pCB0 = pCB0_;
+    pCB1 = pCB1_;
+    pCB2 = pCB2_;
+    pCB3 = pCB3_;
+    pCB4 = pCB4_;
+    pCB5 = pCB5_;
+    pCB6 = pCB6_;
+    pCB7 = pCB7_;
+    pCB0_ += halfFrameDiv16Quarter;
+    pCB1_ += halfFrameDiv16Quarter;
+    pCB2_ += halfFrameDiv16Quarter;
+    pCB3_ += halfFrameDiv16Quarter;
+    pCB4_ += halfFrameDiv16Quarter;
+    pCB5_ += halfFrameDiv16Quarter;
+    pCB6_ += halfFrameDiv16Quarter;
+    pCB7_ += halfFrameDiv16Quarter;
+
+    for (size_t y = 0; y < (pEncoder->resY >> 2); y += 8)
+    {
+      for (size_t x = 0; x < (pEncoder->resX >> 1); x += 16)
+      {
+        *pCB0_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+        *pCB1_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+        *pCB2_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+        *pCB3_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+        *pCB4_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+        *pCB5_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+        *pCB6_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+        *pCB7_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+
+        //__m128i v = _mm_bsrli_si128(*pCB0, 7);
+        //*pSubFrameYUV = *(uint16_t *)&v;
+        //
+        //int64_t loHi64[2];
+        //
+        //loHi64[0] = (uint64_t)(*pSubFrameYUV & 0xFF) * 0x0101010101010101;
+        //loHi64[1] = (uint64_t)((*pSubFrameYUV & 0xFF00) >> 8) * 0x0101010101010101;
+        //
+        //__m128i pickedValue = *(__m128i *)&loHi64;
+        //
+        *pCB0 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0, pickedValue), half);
+        *pCB1 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1, pickedValue), half);
+        *pCB2 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2, pickedValue), half);
+        *pCB3 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3, pickedValue), half);
+        *pCB4 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4, pickedValue), half);
+        *pCB5 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5, pickedValue), half);
+        *pCB6 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6, pickedValue), half);
+        *pCB7 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7, pickedValue), half);
+
+        pSubFrameYUV++;
+        pCB0++;
+        pCB1++;
+        pCB2++;
+        pCB3++;
+        pCB4++;
+        pCB5++;
+        pCB6++;
+        pCB7++;
+        pCB0_++;
+        pCB1_++;
+        pCB2_++;
+        pCB3_++;
+        pCB4_++;
+        pCB5_++;
+        pCB6_++;
+        pCB7_++;
+      }
+
+      pCB0 += sevenTimesResXDiv16Half;
+      pCB1 += sevenTimesResXDiv16Half;
+      pCB2 += sevenTimesResXDiv16Half;
+      pCB3 += sevenTimesResXDiv16Half;
+      pCB4 += sevenTimesResXDiv16Half;
+      pCB5 += sevenTimesResXDiv16Half;
+      pCB6 += sevenTimesResXDiv16Half;
+      pCB7 += sevenTimesResXDiv16Half;
+      pCB0_ += sevenTimesResXDiv16Half;
+      pCB1_ += sevenTimesResXDiv16Half;
+      pCB2_ += sevenTimesResXDiv16Half;
+      pCB3_ += sevenTimesResXDiv16Half;
+      pCB4_ += sevenTimesResXDiv16Half;
+      pCB5_ += sevenTimesResXDiv16Half;
+      pCB6_ += sevenTimesResXDiv16Half;
+      pCB7_ += sevenTimesResXDiv16Half;
+    }
+
+    if (first)
+    {
+      first = 0;
+      //goto chromaSubSampleBuffer;
+    }
+
+    if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 4, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
+    {
+      slapLog(tjGetErrorStr2(pEncoder->pAdditionalData));
+      result = slapError_Compress_Internal;
+      goto epilogue;
+    }
+
+    *pSize = pEncoder->__data0;
   }
-
-  *pSize = pEncoder->__data0;
-
-  (void)stride;
 
 epilogue:
   return result;
@@ -101,7 +328,7 @@ epilogue:
   return result;
 }
 
-slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
+slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const uint64_t flags)
 {
   slapFileWriter *pFileWriter = slapAlloc(slapFileWriter, 1);
   char filenameBuffer[0xFF];
@@ -116,7 +343,7 @@ slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, 
   if (!pFileWriter->filename)
     goto epilogue;
 
-  pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, isStereo3d);
+  pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, flags);
 
   if (!pFileWriter->pEncoder)
     goto epilogue;
@@ -149,7 +376,7 @@ slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, 
   if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->iframeStep))
     goto epilogue;
 
-  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->stereo))
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->mode.flagsPack))
     goto epilogue;
 
   if (slapSuccess != _slapWriteToHeader(pFileWriter, 0))
@@ -295,7 +522,7 @@ epilogue:
   return result;
 }
 
-slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData, const size_t stride)
+slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData)
 {
   slapResult result = slapSuccess;
   size_t dataSize = 0;
@@ -307,7 +534,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     goto epilogue;
   }
 
-  result = slapAddFrameYUV420(pFileWriter->pEncoder, pData, stride, &pFileWriter->pData, &dataSize);
+  result = slapAddFrameYUV420(pFileWriter->pEncoder, pData, &pFileWriter->pData, &dataSize);
 
   if (result != slapSuccess)
     goto epilogue;
@@ -333,6 +560,9 @@ epilogue:
 
 slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
 {
+  if (sizeX & 31 || sizeY & 31) // must be multiple of 32.
+    return NULL;
+
   slapDecoder *pDecoder = slapAlloc(slapDecoder, 1);
 
   if (!pDecoder)

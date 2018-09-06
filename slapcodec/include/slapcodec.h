@@ -55,25 +55,40 @@ extern "C" {
     slapError_MemoryAllocation
   } slapResult;
 
+#define SLAP_FLAG_STEREO 1
+
   typedef struct slapEncoder
   {
     size_t frameIndex;
     size_t iframeStep;
     size_t resX;
     size_t resY;
-    bool_t stereo;
+    uint8_t *pLowResData;
+
+    union mode
+    {
+      uint64_t flagsPack;
+
+      struct flags
+      {
+        unsigned int stereo : 1;
+        unsigned int encoder : 4;
+      } flags;
+
+    } mode;
+
     int quality;
     void *pAdditionalData;
     unsigned long __data0;
   } slapEncoder;
 
-  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder);
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
 
   // @param ppCompressedData should be NULL on when the first frame is added.
-  slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const size_t stride, OUT void **ppCompressedData, OUT size_t *pSize);
+  slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize);
 
 #define SLAP_HEADER_BLOCK_SIZE 1024
 
@@ -100,12 +115,12 @@ extern "C" {
     char *filename;
   } slapFileWriter;
 
-  slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter);
 
   slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter);
 
-  slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData, const size_t stride);
+  slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData);
 
   typedef struct slapDecoder
   {
@@ -143,6 +158,7 @@ extern "C" {
   void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader);
 
   slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader);
+  slapResult _slapFileReader_DecodeNextFrame(IN slapFileReader *pFileReader);
 
 #ifdef __cplusplus
 }

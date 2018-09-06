@@ -50,7 +50,7 @@ int main(int argc, char **argv)
   }
 
   printf("Creating File Writer...\n");
-  slapFileWriter *pFileWriter = slapCreateFileWriter(argv[2], 7680, 7680, 1);
+  slapFileWriter *pFileWriter = slapCreateFileWriter(argv[2], 7680, 7680, SLAP_FLAG_STEREO);
 
   size_t frameCount = 10;
   printf("Adding %" PRIu64 " frames...\n", frameCount);
@@ -58,7 +58,7 @@ int main(int argc, char **argv)
   clock_t before = clock();
 
   for (size_t i = 0; i < frameCount; i++)
-    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer, 7680);
+    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer);
 
   clock_t after = clock();
 
