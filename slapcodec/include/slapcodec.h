@@ -17,7 +17,7 @@
 #include <inttypes.h>
 
 #ifndef bool_t
-#define bool_t uint8_t
+#define bool_t uint64_t
 #endif // !bool_t
 
 #ifndef IN
@@ -50,7 +50,9 @@ extern "C" {
     slapError_Generic,
     slapError_ArgumentNull,
     slapError_Compress_Internal,
-    slapError_FileError
+    slapError_FileError,
+    slapError_EndOfStream,
+    slapError_MemoryAllocation
   } slapResult;
 
   typedef struct slapEncoder
@@ -74,6 +76,16 @@ extern "C" {
   slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const size_t stride, OUT void **ppCompressedData, OUT size_t *pSize);
 
 #define SLAP_HEADER_BLOCK_SIZE 1024
+
+#define SLAP_PRE_HEADER_SIZE 8
+#define SLAP_PRE_HEADER_HEADER_SIZE_INDEX 0
+#define SLAP_PRE_HEADER_FRAME_COUNT_INDEX 1
+#define SLAP_PRE_HEADER_FRAME_SIZEX_INDEX 2
+#define SLAP_PRE_HEADER_FRAME_SIZEY_INDEX 3
+#define SLAP_PRE_HEADER_IFRAME_STEP_INDEX 4
+#define SLAP_PRE_HEADER_CODEC_FLAGS_INDEX 5
+
+#define SLAP_HEADER_PER_FRAME_SIZE 2
 
   typedef struct slapFileWriter
   {
@@ -108,8 +120,6 @@ extern "C" {
   slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
   void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder);
 
-  slapResult slapFinalizeDecoder(IN slapDecoder *pDecoder);
-
   slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData);
 
   typedef struct slapFileReader
@@ -118,12 +128,20 @@ extern "C" {
     void *pCurrentFrame;
     size_t currentFrameAllocatedSize;
 
+    void *pDecodedFrameYUV;
+
+    uint64_t preHeaderBlock[SLAP_PRE_HEADER_SIZE];
     uint64_t *pHeader;
-    size_t headerIndex;
+    size_t headerOffset;
     size_t frameIndex;
 
     slapDecoder *pDecoder;
   } slapFileReader;
+
+  slapFileReader * slapCreateFileReader(const char *filename);
+  void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader);
+
+  slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader);
 
 #ifdef __cplusplus
 }

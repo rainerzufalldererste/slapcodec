@@ -158,6 +158,9 @@ slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, 
   if (slapSuccess != _slapWriteToHeader(pFileWriter, 0))
     goto epilogue;
 
+  if (pFileWriter->headerPosition != SLAP_PRE_HEADER_SIZE)
+    goto epilogue;
+
   return pFileWriter;
 
 epilogue:
@@ -244,10 +247,10 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   if (pFileWriter->headerPosition != fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile))
     goto epilogue;
 
-  ((uint64_t *)pData)[0] = pFileWriter->headerPosition;
-  ((uint64_t *)pData)[1] = pFileWriter->frameCount;
+  ((uint64_t *)pData)[SLAP_PRE_HEADER_HEADER_SIZE_INDEX] = pFileWriter->headerPosition - SLAP_PRE_HEADER_SIZE;
+  ((uint64_t *)pData)[SLAP_PRE_HEADER_FRAME_COUNT_INDEX] = pFileWriter->frameCount;
 
-  if (pFileWriter->headerPosition != fwrite(pData, 1, pFileWriter->headerPosition, pFile))
+  if (pFileWriter->headerPosition != fwrite(pData, sizeof(uint64_t), pFileWriter->headerPosition, pFile))
     goto epilogue;
 
   fclose(pReadFile);
@@ -296,6 +299,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 {
   slapResult result = slapSuccess;
   size_t dataSize = 0;
+  size_t filePosition = 0;
 
   if (!pFileWriter || !pData)
   {
@@ -308,6 +312,8 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   if (result != slapSuccess)
     goto epilogue;
 
+  filePosition = ftell(pFileWriter->pMainFile);
+
   if (dataSize != fwrite(pFileWriter->pData, 1, dataSize, pFileWriter->pMainFile))
   {
     result = slapError_FileError;
@@ -315,6 +321,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   }
 
   pFileWriter->frameCount++;
+  result = _slapWriteToHeader(pFileWriter, filePosition);
   result = _slapWriteToHeader(pFileWriter, dataSize);
 
   if (result != slapSuccess)
@@ -361,14 +368,7 @@ void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
   slapFreePtr(ppDecoder);
 }
 
-slapResult slapFinalizeDecoder(IN slapDecoder * pDecoder)
-{
-  (void)pDecoder;
-
-  return slapSuccess;
-}
-
-slapResult slapDecodeFrame(IN slapDecoder * pDecoder, IN void * pData, const size_t length, IN_OUT void * pYUVData)
+slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData)
 {
   slapResult result = slapSuccess;
 
@@ -386,6 +386,131 @@ slapResult slapDecodeFrame(IN slapDecoder * pDecoder, IN void * pData, const siz
     result = slapError_Compress_Internal;
     goto epilogue;
   }
+
+epilogue:
+  return result;
+}
+
+slapFileReader * slapCreateFileReader(const char *filename)
+{
+  slapFileReader *pFileReader = slapAlloc(slapFileReader, 1);
+  size_t frameSize = 0;
+
+  if (!pFileReader)
+    goto epilogue;
+
+  slapSetZero(pFileReader, slapFileReader);
+
+  pFileReader->pFile = fopen(filename, "rb");
+
+  if (!pFileReader->pFile)
+    goto epilogue;
+
+  if (SLAP_PRE_HEADER_SIZE != fread(pFileReader->preHeaderBlock, sizeof(uint64_t), SLAP_PRE_HEADER_SIZE, pFileReader->pFile))
+    goto epilogue;
+
+  pFileReader->pHeader = slapAlloc(uint64_t, pFileReader->preHeaderBlock[SLAP_PRE_HEADER_HEADER_SIZE_INDEX]);
+
+  if (!pFileReader->pHeader)
+    goto epilogue;
+
+  if (pFileReader->preHeaderBlock[SLAP_PRE_HEADER_HEADER_SIZE_INDEX] != fread(pFileReader->pHeader, sizeof(uint64_t), pFileReader->preHeaderBlock[SLAP_PRE_HEADER_HEADER_SIZE_INDEX], pFileReader->pFile))
+    goto epilogue;
+
+  pFileReader->headerOffset = ftell(pFileReader->pFile);
+
+  pFileReader->pDecoder = slapCreateDecoder(pFileReader->preHeaderBlock[SLAP_PRE_HEADER_FRAME_SIZEX_INDEX], pFileReader->preHeaderBlock[SLAP_PRE_HEADER_FRAME_SIZEY_INDEX], pFileReader->preHeaderBlock[SLAP_PRE_HEADER_CODEC_FLAGS_INDEX]);
+
+  if (!pFileReader->pDecoder)
+    goto epilogue;
+
+  frameSize = pFileReader->pDecoder->resX * pFileReader->pDecoder->resX;
+
+  pFileReader->pDecodedFrameYUV = slapAlloc(uint8_t, frameSize);
+
+  if (!pFileReader->pDecodedFrameYUV)
+    goto epilogue;
+
+  return pFileReader;
+
+epilogue:
+
+  slapFreePtr(&(pFileReader)->pHeader);
+  slapFreePtr(&(pFileReader)->pCurrentFrame);
+  slapFreePtr(&(pFileReader)->pDecodedFrameYUV);
+
+  if (pFileReader->pFile)
+    fclose(pFileReader->pFile);
+
+  if (pFileReader->pDecoder)
+    slapDestroyDecoder(&pFileReader->pDecoder);
+
+  slapFreePtr(&pFileReader);
+
+  return NULL;
+}
+
+void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader)
+{
+  if (ppFileReader && *ppFileReader)
+  {
+    slapFreePtr(&(*ppFileReader)->pHeader);
+    slapFreePtr(&(*ppFileReader)->pCurrentFrame);
+    slapFreePtr(&(*ppFileReader)->pDecodedFrameYUV);
+    slapDestroyDecoder(&(*ppFileReader)->pDecoder);
+    fclose((*ppFileReader)->pFile);
+  }
+
+  slapFreePtr(ppFileReader);
+}
+
+slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
+{
+  slapResult result = slapSuccess;
+  uint64_t size;
+  uint64_t position;
+
+  if (!pFileReader)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  if (pFileReader->frameIndex >= pFileReader->preHeaderBlock[SLAP_PRE_HEADER_FRAME_COUNT_INDEX])
+  {
+    result = slapError_EndOfStream;
+    goto epilogue;
+  }
+
+  position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex] + pFileReader->headerOffset;
+  size = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + 1];
+
+  if (pFileReader->currentFrameAllocatedSize < size)
+  {
+    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, size);
+    pFileReader->currentFrameAllocatedSize = size;
+
+    if (!pFileReader->pCurrentFrame)
+    {
+      pFileReader->currentFrameAllocatedSize = 0;
+      result = slapError_MemoryAllocation;
+      goto epilogue;
+    }
+  }
+
+  if (0 != fseek(pFileReader->pFile, (long)position, SEEK_SET))
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+  if (size != fread(pFileReader->pCurrentFrame, 1, size, pFileReader->pFile))
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+  pFileReader->frameIndex++;
 
 epilogue:
   return result;

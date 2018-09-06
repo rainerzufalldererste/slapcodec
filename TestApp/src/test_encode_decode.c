@@ -46,17 +46,18 @@ int main(int argc, char **argv)
   else
   {
     printf("Usage: %s <inputfile> <outputfile>", argv[0]);
-    return 0;
+    goto epilogue;
   }
 
   printf("Creating File Writer...\n");
   slapFileWriter *pFileWriter = slapCreateFileWriter(argv[2], 7680, 7680, 1);
 
-  printf("Adding 100 frames...\n");
+  size_t frameCount = 10;
+  printf("Adding %" PRIu64 " frames...\n", frameCount);
 
   clock_t before = clock();
 
-  for (size_t i = 0; i < 100; i++)
+  for (size_t i = 0; i < frameCount; i++)
     slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer, 7680);
 
   clock_t after = clock();
@@ -69,7 +70,29 @@ int main(int argc, char **argv)
   printf("Destroying File Writer...\n");
   slapDestroyFileWriter(&pFileWriter);
 
-  printf("Done.");
+  printf("Encoding Done.\n");
+
+  printf("Creating File Reader...\n");
+  slapFileReader *pFileReader = slapCreateFileReader(argv[2]);
+
+  slapResult result;
+  frameCount = 0;
+  
+  do
+  {
+    result = _slapFileReader_ReadNextFrame(pFileReader);
+
+    if (result != slapSuccess)
+      break;
+
+    frameCount++;
+
+  } while (1);
+
+  printf("Frame Count: %" PRIu64 ".\n", frameCount);
+
+  printf("Destroying File Reader...\n");
+  slapDestroyFileReader(&pFileReader);
 
 epilogue:
   free(pBuffer);
