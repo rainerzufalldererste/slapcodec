@@ -7,12 +7,71 @@
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "slapcodec.h"
+#include <time.h>
 
-int main(void)
+int main(int argc, char **argv)
 {
-  slapFileWriter *pFileWriter = slapInitFileWriter("file", 1024, 1024, 1);
+  void *pBuffer = NULL;
+  int retval = 0;
+
+  if (argc > 2)
+  {
+    FILE *pFile = fopen(argv[1], "rb");
+
+    if (!pFile)
+    {
+      printf("File not found.");
+      retval = 1;
+      goto epilogue;
+    }
+
+    fseek(pFile, 0, SEEK_END);
+    size_t size = ftell(pFile);
+    fseek(pFile, 0, SEEK_SET);
+
+    pBuffer = malloc(size);
+
+    if (!pBuffer)
+    {
+      printf("Memory allocation failure.");
+      retval = 1;
+      goto epilogue;
+    }
+
+    size_t readBytes = fread(pBuffer, 1, size, pFile);
+    printf("Read %" PRIu64 " bytes from '%s'.\n", readBytes, argv[1]);
+
+    fclose(pFile);
+  }
+  else
+  {
+    printf("Usage: %s <inputfile> <outputfile>", argv[0]);
+    return 0;
+  }
+
+  printf("Creating File Writer...\n");
+  slapFileWriter *pFileWriter = slapCreateFileWriter(argv[2], 7680, 7680, 1);
+
+  printf("Adding 100 frames...\n");
+
+  clock_t before = clock();
+
+  for (size_t i = 0; i < 100; i++)
+    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer, 7680);
+
+  clock_t after = clock();
+
+  printf("%d ms.\n", after - before);
+
+  printf("Finalizing File...\n");
   slapFinalizeFileWriter(pFileWriter);
+
+  printf("Destroying File Writer...\n");
   slapDestroyFileWriter(&pFileWriter);
 
-  return 0;
+  printf("Done.");
+
+epilogue:
+  free(pBuffer);
+  return retval;
 }

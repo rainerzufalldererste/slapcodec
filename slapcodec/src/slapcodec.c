@@ -64,14 +64,14 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const si
     goto epilogue;
   }
 
-  unsigned long jpegSize = 0;
-  if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, (int)stride, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &jpegSize, pEncoder->quality, 0))
+  if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 4, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
   {
+    slapLog(tjGetErrorStr2(pEncoder->pAdditionalData));
     result = slapError_Compress_Internal;
     goto epilogue;
   }
 
-  *pSize = jpegSize;
+  *pSize = pEncoder->__data0;
 
   (void)stride;
 
@@ -101,7 +101,7 @@ epilogue:
   return result;
 }
 
-slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
+slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
 {
   slapFileWriter *pFileWriter = slapAlloc(slapFileWriter, 1);
   char filenameBuffer[0xFF];
@@ -111,14 +111,18 @@ slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, co
     goto epilogue;
 
   slapSetZero(pFileWriter, slapFileWriter);
+  slapStrCpy(pFileWriter->filename, filename);
+
+  if (!pFileWriter->filename)
+    goto epilogue;
 
   pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, isStereo3d);
 
   if (!pFileWriter->pEncoder)
     goto epilogue;
 
-  sprintf_s(filenameBuffer, 0xFF, "%s.slap", filename);
-  sprintf_s(headerFilenameBuffer, 0xFF, "%s.slap.header", filename);
+  sprintf_s(filenameBuffer, 0xFF, "%s.raw", filename);
+  sprintf_s(headerFilenameBuffer, 0xFF, "%s.header", filename);
 
   pFileWriter->pMainFile = fopen(filenameBuffer, "wb");
 
@@ -128,6 +132,24 @@ slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, co
   pFileWriter->pHeaderFile = fopen(headerFilenameBuffer, "wb");
 
   if (!pFileWriter->pHeaderFile)
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, 0))
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, 0))
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->resX))
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->resY))
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->iframeStep))
+    goto epilogue;
+
+  if (slapSuccess != _slapWriteToHeader(pFileWriter, (uint64_t)pFileWriter->pEncoder->stereo))
     goto epilogue;
 
   if (slapSuccess != _slapWriteToHeader(pFileWriter, 0))
@@ -163,6 +185,9 @@ void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter)
 
     if ((*ppFileWriter)->pData)
       tjFree((*ppFileWriter)->pData);
+
+    if ((*ppFileWriter)->filename)
+      free((*ppFileWriter)->filename);
   }
 
   slapFreePtr(ppFileWriter);
@@ -170,30 +195,101 @@ void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter)
 
 slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
 {
-  if (pFileWriter)
+  slapResult result = slapError_Generic;
+  FILE *pFile = NULL;
+  FILE *pReadFile = NULL;
+  char filenameBuffer[0xFF];
+  void *pData = NULL;
+  size_t fileSize = 0;
+
+  if (!pFileWriter)
+    goto epilogue;
+
+  if (pFileWriter->pEncoder)
+    slapFinalizeEncoder(pFileWriter->pEncoder);
+
+  if (pFileWriter->pHeaderFile)
   {
-    if (pFileWriter->pEncoder)
-      slapFinalizeEncoder(pFileWriter->pEncoder);
+    if (pFileWriter->frameSizeOffsetIndex != 0)
+      fwrite(pFileWriter->frameSizeOffsets, 1, sizeof(uint64_t) * pFileWriter->frameSizeOffsetIndex, pFileWriter->pHeaderFile);
 
-    if (pFileWriter->pHeaderFile)
-    {
-      if (pFileWriter->frameSizeOffsetIndex != 0)
-        fwrite(pFileWriter->frameSizeOffsets, 1, sizeof(uint64_t) * pFileWriter->frameSizeOffsetIndex, pFileWriter->pHeaderFile);
-
-      fflush(pFileWriter->pHeaderFile);
-      fclose(pFileWriter->pHeaderFile);
-      pFileWriter->pHeaderFile = NULL;
-    }
-
-    if (pFileWriter->pMainFile)
-    {
-      fflush(pFileWriter->pMainFile);
-      fclose(pFileWriter->pMainFile);
-      pFileWriter->pMainFile = NULL;
-    }
+    fflush(pFileWriter->pHeaderFile);
+    fclose(pFileWriter->pHeaderFile);
+    pFileWriter->pHeaderFile = NULL;
   }
 
-  return slapSuccess;
+  if (pFileWriter->pMainFile)
+  {
+    fflush(pFileWriter->pMainFile);
+    fclose(pFileWriter->pMainFile);
+    pFileWriter->pMainFile = NULL;
+  }
+
+  pFile = fopen(pFileWriter->filename, "wb");
+
+  if (!pFile)
+    goto epilogue;
+
+  sprintf_s(filenameBuffer, 0xFF, "%s.header", pFileWriter->filename);
+  pReadFile = fopen(filenameBuffer, "rb");
+
+  if (!pReadFile)
+    goto epilogue;
+
+  pData = slapAlloc(unsigned char, pFileWriter->headerPosition * sizeof(uint64_t));
+
+  if (!pData)
+    goto epilogue;
+
+  if (pFileWriter->headerPosition != fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile))
+    goto epilogue;
+
+  ((uint64_t *)pData)[0] = pFileWriter->headerPosition;
+  ((uint64_t *)pData)[1] = pFileWriter->frameCount;
+
+  if (pFileWriter->headerPosition != fwrite(pData, 1, pFileWriter->headerPosition, pFile))
+    goto epilogue;
+
+  fclose(pReadFile);
+  remove(filenameBuffer);
+
+  sprintf_s(filenameBuffer, 0xFF, "%s.raw", pFileWriter->filename);
+  pReadFile = fopen(filenameBuffer, "rb");
+
+  if (!pFile)
+    goto epilogue;
+
+  fseek(pReadFile, 0, SEEK_END);
+  fileSize = ftell(pReadFile);
+  fseek(pReadFile, 0, SEEK_SET);
+
+  // TODO: do in multiple steps to not consume enormous amounts of memory.
+  slapRealloc(&pData, uint8_t, fileSize);
+
+  if (fileSize != fread(pData, 1, fileSize, pReadFile))
+    goto epilogue;
+
+  if (fileSize != fwrite(pData, 1, fileSize, pFile))
+    goto epilogue;
+
+  fclose(pReadFile);
+  pReadFile = NULL;
+  remove(filenameBuffer);
+
+  result = slapSuccess;
+
+epilogue:
+
+  if (pFile)
+    fclose(pFile);
+
+  if (pReadFile)
+    fclose(pReadFile);
+
+  if (pData)
+    slapFreePtr(&pData);
+
+  return result;
 }
 
 slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData, const size_t stride)
@@ -207,7 +303,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     goto epilogue;
   }
 
-  result = slapAddFrameYUV420(pFileWriter->pEncoder, pData, stride, pFileWriter->pData, &dataSize);
+  result = slapAddFrameYUV420(pFileWriter->pEncoder, pData, stride, &pFileWriter->pData, &dataSize);
 
   if (result != slapSuccess)
     goto epilogue;
@@ -223,6 +319,73 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   if (result != slapSuccess)
     goto epilogue;
+
+epilogue:
+  return result;
+}
+
+slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
+{
+  slapDecoder *pDecoder = slapAlloc(slapDecoder, 1);
+
+  if (!pDecoder)
+    goto epilogue;
+
+  slapSetZero(pDecoder, slapDecoder);
+
+  pDecoder->resX = sizeX;
+  pDecoder->resY = sizeY;
+  pDecoder->iframeStep = 30;
+  pDecoder->stereo = isStereo3d;
+
+  if (!isStereo3d)
+    goto epilogue;
+
+  pDecoder->pAdditionalData = tjInitDecompress();
+
+  if (!pDecoder->pAdditionalData)
+    goto epilogue;
+
+  return pDecoder;
+
+epilogue:
+  slapFreePtr(&pDecoder);
+  return NULL;
+}
+
+void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
+{
+  if (ppDecoder && *ppDecoder)
+    tjDestroy((*ppDecoder)->pAdditionalData);
+
+  slapFreePtr(ppDecoder);
+}
+
+slapResult slapFinalizeDecoder(IN slapDecoder * pDecoder)
+{
+  (void)pDecoder;
+
+  return slapSuccess;
+}
+
+slapResult slapDecodeFrame(IN slapDecoder * pDecoder, IN void * pData, const size_t length, IN_OUT void * pYUVData)
+{
+  slapResult result = slapSuccess;
+
+  if (!pDecoder || !pData || !length || !pYUVData)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  pDecoder->frameIndex++;
+
+  if (tjDecompressToYUV2(pDecoder->pAdditionalData, (unsigned char *)pData, (unsigned long)length, (unsigned char *)pYUVData, (int)pDecoder->resX, 4, (int)pDecoder->resY, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pDecoder->pAdditionalData));
+    result = slapError_Compress_Internal;
+    goto epilogue;
+  }
 
 epilogue:
   return result;

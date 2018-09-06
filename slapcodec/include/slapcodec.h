@@ -13,6 +13,8 @@
 #include <malloc.h>
 #include <memory.h>
 #include <stdio.h>
+#include <string.h>
+#include <inttypes.h>
 
 #ifndef bool_t
 #define bool_t uint8_t
@@ -31,8 +33,12 @@
 #endif // !IN_OUT
 
 #define slapAlloc(Type, count) (Type *)malloc(sizeof(Type) * (count))
-#define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = 0; } } while (0)
+#define slapRealloc(ptr, Type, count) (*ptr = (Type *)realloc(*ptr, sizeof(Type) * (count)))
+#define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = NULL; } } while (0)
 #define slapSetZero(ptr, Type) memset(ptr, 0, sizeof(Type))
+#define slapStrCpy(target, source) do { size_t size = strlen(source) + 1; target = slapAlloc(char, size); if (target) { memcpy(target, source, size); } } while (0)
+
+#define slapLog(str, ...) printf(str, __VA_ARGS__);
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,6 +62,7 @@ extern "C" {
     bool_t stereo;
     int quality;
     void *pAdditionalData;
+    unsigned long __data0;
   } slapEncoder;
 
   slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
@@ -66,7 +73,7 @@ extern "C" {
   // @param ppCompressedData should be NULL on when the first frame is added.
   slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, const size_t stride, OUT void **ppCompressedData, OUT size_t *pSize);
 
-#define SLAP_HEADER_BLOCK_SIZE 256
+#define SLAP_HEADER_BLOCK_SIZE 1024
 
   typedef struct slapFileWriter
   {
@@ -78,14 +85,45 @@ extern "C" {
     void *pData;
     uint64_t frameSizeOffsets[SLAP_HEADER_BLOCK_SIZE];
     size_t frameSizeOffsetIndex;
+    char *filename;
   } slapFileWriter;
 
-  slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
   void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter);
 
   slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter);
 
   slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData, const size_t stride);
+
+  typedef struct slapDecoder
+  {
+    size_t frameIndex;
+    size_t iframeStep;
+    size_t resX;
+    size_t resY;
+    bool_t stereo;
+    void *pAdditionalData;
+  } slapDecoder;
+
+  slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder);
+
+  slapResult slapFinalizeDecoder(IN slapDecoder *pDecoder);
+
+  slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData);
+
+  typedef struct slapFileReader
+  {
+    FILE *pFile;
+    void *pCurrentFrame;
+    size_t currentFrameAllocatedSize;
+
+    uint64_t *pHeader;
+    size_t headerIndex;
+    size_t frameIndex;
+
+    slapDecoder *pDecoder;
+  } slapFileReader;
 
 #ifdef __cplusplus
 }
