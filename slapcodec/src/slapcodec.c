@@ -110,7 +110,7 @@ slapFileWriter * slapInitFileWriter(const char *filename, const size_t sizeX, co
   if (!pFileWriter)
     goto epilogue;
 
-  slapSetZero(pFileWriter, slapEncoder);
+  slapSetZero(pFileWriter, slapFileWriter);
 
   pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, isStereo3d);
 

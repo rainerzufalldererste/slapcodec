@@ -32,7 +32,7 @@
 
 #define slapAlloc(Type, count) (Type *)malloc(sizeof(Type) * (count))
 #define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = 0; } } while (0)
-#define slapSetZero(ptr, Type) memset(ptr, sizeof(Type), 0)
+#define slapSetZero(ptr, Type) memset(ptr, 0, sizeof(Type))
 
 #ifdef __cplusplus
 extern "C" {
