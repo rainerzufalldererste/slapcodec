@@ -127,6 +127,7 @@ extern "C" {
     FILE *pFile;
     void *pCurrentFrame;
     size_t currentFrameAllocatedSize;
+    size_t currentFrameSize;
 
     void *pDecodedFrameYUV;
 

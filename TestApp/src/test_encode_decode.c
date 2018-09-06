@@ -87,6 +87,14 @@ int main(int argc, char **argv)
 
     frameCount++;
 
+    char fname[255];
+    sprintf_s(fname, 255, "%s-%" PRIu64 ".jpg", argv[2], frameCount);
+
+    FILE *pFrame = fopen(fname, "wb");
+
+    fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFrame);
+    fclose(pFrame);
+
   } while (1);
 
   printf("Frame Count: %" PRIu64 ".\n", frameCount);

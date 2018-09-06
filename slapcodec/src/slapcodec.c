@@ -467,7 +467,6 @@ void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader)
 slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
 {
   slapResult result = slapSuccess;
-  uint64_t size;
   uint64_t position;
 
   if (!pFileReader)
@@ -483,12 +482,12 @@ slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
   }
 
   position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex] + pFileReader->headerOffset;
-  size = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + 1];
+  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + 1];
 
-  if (pFileReader->currentFrameAllocatedSize < size)
+  if (pFileReader->currentFrameAllocatedSize < pFileReader->currentFrameSize)
   {
-    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, size);
-    pFileReader->currentFrameAllocatedSize = size;
+    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, pFileReader->currentFrameSize);
+    pFileReader->currentFrameAllocatedSize = pFileReader->currentFrameSize;
 
     if (!pFileReader->pCurrentFrame)
     {
@@ -498,13 +497,13 @@ slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
     }
   }
 
-  if (0 != fseek(pFileReader->pFile, (long)position, SEEK_SET))
+  if (fseek(pFileReader->pFile, (long)position, SEEK_SET))
   {
     result = slapError_FileError;
     goto epilogue;
   }
 
-  if (size != fread(pFileReader->pCurrentFrame, 1, size, pFileReader->pFile))
+  if (pFileReader->currentFrameSize != fread(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFileReader->pFile))
   {
     result = slapError_FileError;
     goto epilogue;
