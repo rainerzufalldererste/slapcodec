@@ -118,7 +118,7 @@ int main(int argc, char **argv)
   printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
 #endif
 
-  printf("Frame Count: %" PRIu64 "\n", frameCount);
+  printf("Frame Count: %" PRIu64 ".\n", frameCount);
 
   printf("Destroying File Reader...\n");
   slapDestroyFileReader(&pFileReader);

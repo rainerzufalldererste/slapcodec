@@ -62,6 +62,18 @@ extern "C" {
 
 #define SLAP_FLAG_STEREO 1
 
+  typedef union mode
+  {
+    uint64_t flagsPack;
+
+    struct flags
+    {
+      unsigned int stereo : 1;
+      unsigned int encoder : 4;
+    } flags;
+
+  } mode;
+
   typedef struct slapEncoder
   {
     size_t frameIndex;
@@ -71,17 +83,7 @@ extern "C" {
     uint8_t *pLowResData;
     uint8_t *pLastFrame;
 
-    union mode
-    {
-      uint64_t flagsPack;
-
-      struct flags
-      {
-        unsigned int stereo : 1;
-        unsigned int encoder : 4;
-      } flags;
-
-    } mode;
+    mode mode;
 
     int quality;
     void *pAdditionalData;
@@ -134,11 +136,15 @@ extern "C" {
     size_t iframeStep;
     size_t resX;
     size_t resY;
-    bool_t stereo;
+
+    mode mode;
+
     void *pAdditionalData;
+    uint8_t *pLowResData;
+    uint8_t *pLastFrame;
   } slapDecoder;
 
-  slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d);
+  slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder);
 
   slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData);

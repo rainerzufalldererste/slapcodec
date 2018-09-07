@@ -643,7 +643,7 @@ epilogue:
   return result;
 }
 
-slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bool_t isStereo3d)
+slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const uint64_t flags)
 {
   if (sizeX & 31 || sizeY & 31) // must be multiple of 32.
     return NULL;
@@ -658,19 +658,41 @@ slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const bo
   pDecoder->resX = sizeX;
   pDecoder->resY = sizeY;
   pDecoder->iframeStep = 30;
-  pDecoder->stereo = isStereo3d;
-
-  if (!isStereo3d)
-    goto epilogue;
+  pDecoder->mode.flagsPack = flags;
 
   pDecoder->pAdditionalData = tjInitDecompress();
 
   if (!pDecoder->pAdditionalData)
     goto epilogue;
 
+  size_t lowResSizeX = sizeX >> 3;
+  size_t lowResSizeY = sizeY >> 3;
+
+  if (pDecoder->mode.flags.stereo)
+    lowResSizeY <<= 1;
+
+  pDecoder->pLowResData = slapAlloc(uint8_t, lowResSizeX * lowResSizeY * 3 / 2);
+
+  if (!pDecoder->pLowResData)
+    goto epilogue;
+
+  pDecoder->pLastFrame = slapAlloc(uint8_t, sizeX * sizeY * 3 / 2);
+
+  if (!pDecoder->pLastFrame)
+    goto epilogue;
+
   return pDecoder;
 
 epilogue:
+  if (pDecoder->pAdditionalData)
+    tjDestroy(pDecoder->pAdditionalData);
+
+  if (pDecoder->pLowResData)
+    slapFreePtr(&pDecoder->pLowResData);
+
+  if (pDecoder->pLastFrame)
+    slapFreePtr(&pDecoder->pLastFrame);
+
   slapFreePtr(&pDecoder);
   return NULL;
 }
@@ -678,7 +700,15 @@ epilogue:
 void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
 {
   if (ppDecoder && *ppDecoder)
+  {
     tjDestroy((*ppDecoder)->pAdditionalData);
+
+    if ((*ppDecoder)->pLowResData)
+      slapFreePtr(&(*ppDecoder)->pLowResData);
+
+    if ((*ppDecoder)->pLastFrame)
+      slapFreePtr(&(*ppDecoder)->pLastFrame);
+  }
 
   slapFreePtr(ppDecoder);
 }
