@@ -12,6 +12,7 @@
 int main(int argc, char **argv)
 {
   void *pBuffer = NULL;
+  void *pBuffer2 = NULL;
   int retval = 0;
 
   if (argc > 2)
@@ -29,7 +30,8 @@ int main(int argc, char **argv)
     size_t size = ftell(pFile);
     fseek(pFile, 0, SEEK_SET);
 
-    pBuffer = malloc(size);
+    pBuffer = malloc(7680 * 11520);
+    printf("Start: 0x%" PRIx64 ", End: 0x%" PRIx64 ".\n", (uint64_t)pBuffer, (uint64_t)((uint8_t *)pBuffer + 7680 * 11520));
 
     if (!pBuffer)
     {
@@ -55,10 +57,14 @@ int main(int argc, char **argv)
   size_t frameCount = 10;
   printf("Adding %" PRIu64 " frames...\n", frameCount);
 
+  pBuffer2 = malloc(7680 * 11520);
   clock_t before = clock();
 
   for (size_t i = 0; i < frameCount; i++)
-    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer);
+  {
+    memcpy(pBuffer2, pBuffer, 7680 * 11520);
+    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer2);
+  }
 
   clock_t after = clock();
 

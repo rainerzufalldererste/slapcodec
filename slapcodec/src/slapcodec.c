@@ -10,8 +10,8 @@
 #include "turbojpeg.h"
 
 #include <intrin.h>
-#include <emmintrin.h>
 #include <xmmintrin.h>
+#include <emmintrin.h>
 
 slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags)
 {
@@ -95,10 +95,7 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
 
   if (pEncoder->mode.flags.encoder == 0)
   {
-    //size_t framesize = pEncoder->resX * pEncoder->resY;
     uint8_t *pMainFrameY = (uint8_t *)pData;
-    //uint8_t *pMainFrameU = pMainFrameY + framesize;
-    //uint8_t *pMainFrameV = pMainFrameU + (framesize >> 2);
 
     uint16_t *pSubFrameYUV = (uint16_t *)pEncoder->pLowResData;
 
@@ -129,33 +126,17 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
     {
       for (size_t x = 0; x < pEncoder->resX; x += 16)
       {
-        *pCB0_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
-        *pCB1_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
-        *pCB2_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
-        *pCB3_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
-        *pCB4_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
-        *pCB5_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
-        *pCB6_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
-        *pCB7_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
-        //
-        //__m128i v = _mm_bsrli_si128(*pCB0, 7);
-        //*pSubFrameYUV = *(uint16_t *)&v;
-        //
-        //int64_t loHi64[2];
-        //
-        //loHi64[0] = (uint64_t)(*pSubFrameYUV & 0xFF) * 0x0101010101010101;
-        //loHi64[1] = (uint64_t)((*pSubFrameYUV & 0xFF00) >> 8) * 0x0101010101010101;
-        //
-        //__m128i pickedValue = *(__m128i *)&loHi64;
-        //
-        *pCB0 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0, pickedValue), half);
-        *pCB1 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1, pickedValue), half);
-        *pCB2 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2, pickedValue), half);
-        *pCB3 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3, pickedValue), half);
-        *pCB4 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4, pickedValue), half);
-        *pCB5 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5, pickedValue), half);
-        *pCB6 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6, pickedValue), half);
-        *pCB7 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7, pickedValue), half);
+        *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+        *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+        *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+        *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+        *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+        *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+        *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+        *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+
+        __m128i v = _mm_srli_si128(*pCB0, 7);
+        *pSubFrameYUV = *(uint16_t *)&v;
 
         pSubFrameYUV++;
         pCB0++;
@@ -196,58 +177,43 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
 
     size_t halfFrameDiv16Quarter = resXdiv16 * pEncoder->resY >> 3;
     size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
+    size_t resXdiv16Half = resXdiv16 >> 1;
 
     int first = 1;
-    //chromaSubSampleBuffer:
+    chromaSubSampleBuffer:
 
     pCB0 = pCB0_;
-    pCB1 = pCB1_;
-    pCB2 = pCB2_;
-    pCB3 = pCB3_;
-    pCB4 = pCB4_;
-    pCB5 = pCB5_;
-    pCB6 = pCB6_;
-    pCB7 = pCB7_;
+    pCB1 = pCB0 + resXdiv16Half;
+    pCB2 = pCB1 + resXdiv16Half;
+    pCB3 = pCB2 + resXdiv16Half;
+    pCB4 = pCB3 + resXdiv16Half;
+    pCB5 = pCB4 + resXdiv16Half;
+    pCB6 = pCB5 + resXdiv16Half;
+    pCB7 = pCB6 + resXdiv16Half;
     pCB0_ += halfFrameDiv16Quarter;
-    pCB1_ += halfFrameDiv16Quarter;
-    pCB2_ += halfFrameDiv16Quarter;
-    pCB3_ += halfFrameDiv16Quarter;
-    pCB4_ += halfFrameDiv16Quarter;
-    pCB5_ += halfFrameDiv16Quarter;
-    pCB6_ += halfFrameDiv16Quarter;
-    pCB7_ += halfFrameDiv16Quarter;
+    pCB1_ = pCB0_ + resXdiv16Half;
+    pCB2_ = pCB1_ + resXdiv16Half;
+    pCB3_ = pCB2_ + resXdiv16Half;
+    pCB4_ = pCB3_ + resXdiv16Half;
+    pCB5_ = pCB4_ + resXdiv16Half;
+    pCB6_ = pCB5_ + resXdiv16Half;
+    pCB7_ = pCB6_ + resXdiv16Half;
 
     for (size_t y = 0; y < (pEncoder->resY >> 2); y += 8)
     {
       for (size_t x = 0; x < (pEncoder->resX >> 1); x += 16)
       {
-        *pCB0_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
-        *pCB1_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
-        *pCB2_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
-        *pCB3_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
-        *pCB4_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
-        *pCB5_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
-        *pCB6_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
-        *pCB7_ = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+        *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+        *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+        *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+        *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+        *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+        *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+        *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+        *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
 
-        //__m128i v = _mm_bsrli_si128(*pCB0, 7);
-        //*pSubFrameYUV = *(uint16_t *)&v;
-        //
-        //int64_t loHi64[2];
-        //
-        //loHi64[0] = (uint64_t)(*pSubFrameYUV & 0xFF) * 0x0101010101010101;
-        //loHi64[1] = (uint64_t)((*pSubFrameYUV & 0xFF00) >> 8) * 0x0101010101010101;
-        //
-        //__m128i pickedValue = *(__m128i *)&loHi64;
-        //
-        *pCB0 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB0, pickedValue), half);
-        *pCB1 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB1, pickedValue), half);
-        *pCB2 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB2, pickedValue), half);
-        *pCB3 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB3, pickedValue), half);
-        *pCB4 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB4, pickedValue), half);
-        *pCB5 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB5, pickedValue), half);
-        *pCB6 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB6, pickedValue), half);
-        *pCB7 = half;//_mm_add_epi8(_mm_sub_epi8(*pCB7, pickedValue), half);
+        __m128i v = _mm_srli_si128(*pCB0, 7);
+        *pSubFrameYUV = *(uint16_t *)&v;
 
         pSubFrameYUV++;
         pCB0++;
@@ -289,7 +255,7 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
     if (first)
     {
       first = 0;
-      //goto chromaSubSampleBuffer;
+      goto chromaSubSampleBuffer;
     }
 
     if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 4, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
