@@ -69,6 +69,7 @@ extern "C" {
     size_t resX;
     size_t resY;
     uint8_t *pLowResData;
+    uint8_t *pLastFrame;
 
     union mode
     {
