@@ -95,7 +95,7 @@ extern "C" {
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
 
-  // @param ppCompressedData should be NULL on when the first frame is added.
+  // @param *ppCompressedData should be NULL on when the first frame is added.
   slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize);
 
 #define SLAP_HEADER_BLOCK_SIZE 1024

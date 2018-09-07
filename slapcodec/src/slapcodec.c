@@ -191,6 +191,42 @@ void _slapLastFrameDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
   }
 }
 
+void _slapAddLastFrameDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
+{
+  __m128i *pLastFrameYUV = (__m128i *)pDecoder->pLastFrame;
+  __m128i *pCurrentFrameYUV = (__m128i *)pData;
+
+  __m128i *pLF0 = (__m128i *)pLastFrameYUV;
+  __m128i *pCF0 = (__m128i *)pCurrentFrameYUV;
+
+  __m128i halfY = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+  __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+
+  size_t max = (pDecoder->resX * pDecoder->resY) >> 4;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i nb = _mm_add_epi8(*pLF0, _mm_sub_epi8(*pCF0, halfY));
+    _mm_store_si128(pLF0, nb);
+    _mm_store_si128(pCF0, nb);
+
+    pLF0++;
+    pCF0++;
+  }
+
+  max >>= 1;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i nb = _mm_add_epi8(*pLF0, _mm_sub_epi8(*pCF0, halfUV));
+    _mm_store_si128(pLF0, nb);
+    _mm_store_si128(pCF0, nb);
+
+    pLF0++;
+    pCF0++;
+  }
+}
+
 void _slapGenSubBufferStereoDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
 {
   uint8_t *pMainFrameY = (uint8_t *)pData;
@@ -313,6 +349,163 @@ chromaSubSampleBuffer:
       *pSubFrameYUV = *(uint16_t *)&v;
 
       pSubFrameYUV++;
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16Half;
+    pCB1 += sevenTimesResXDiv16Half;
+    pCB2 += sevenTimesResXDiv16Half;
+    pCB3 += sevenTimesResXDiv16Half;
+    pCB4 += sevenTimesResXDiv16Half;
+    pCB5 += sevenTimesResXDiv16Half;
+    pCB6 += sevenTimesResXDiv16Half;
+    pCB7 += sevenTimesResXDiv16Half;
+    pCB0_ += sevenTimesResXDiv16Half;
+    pCB1_ += sevenTimesResXDiv16Half;
+    pCB2_ += sevenTimesResXDiv16Half;
+    pCB3_ += sevenTimesResXDiv16Half;
+    pCB4_ += sevenTimesResXDiv16Half;
+    pCB5_ += sevenTimesResXDiv16Half;
+    pCB6_ += sevenTimesResXDiv16Half;
+    pCB7_ += sevenTimesResXDiv16Half;
+  }
+
+  if (first)
+  {
+    first = 0;
+    goto chromaSubSampleBuffer;
+  }
+}
+
+void _slapAddStereoDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
+{
+  uint8_t *pMainFrameY = (uint8_t *)pData;
+
+  size_t resXdiv16 = pDecoder->resX >> 4;
+  size_t sevenTimesResXDiv16 = resXdiv16 * 7;
+
+  __m128i *pCB0 = (__m128i *)pMainFrameY;
+  __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
+  __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
+  __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
+  __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
+  __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
+  __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
+  __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
+
+  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (pDecoder->resY >> 1);
+  __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
+  __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
+  __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
+  __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
+  __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
+  __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
+  __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
+
+  __m128i halfY = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+  __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+
+  for (size_t y = 0; y < (pDecoder->resY >> 1); y += 8)
+  {
+    for (size_t x = 0; x < pDecoder->resX; x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfY), *pCB0);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfY), *pCB1);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfY), *pCB2);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfY), *pCB3);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfY), *pCB4);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfY), *pCB5);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfY), *pCB6);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfY), *pCB7);
+
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16;
+    pCB1 += sevenTimesResXDiv16;
+    pCB2 += sevenTimesResXDiv16;
+    pCB3 += sevenTimesResXDiv16;
+    pCB4 += sevenTimesResXDiv16;
+    pCB5 += sevenTimesResXDiv16;
+    pCB6 += sevenTimesResXDiv16;
+    pCB7 += sevenTimesResXDiv16;
+    pCB0_ += sevenTimesResXDiv16;
+    pCB1_ += sevenTimesResXDiv16;
+    pCB2_ += sevenTimesResXDiv16;
+    pCB3_ += sevenTimesResXDiv16;
+    pCB4_ += sevenTimesResXDiv16;
+    pCB5_ += sevenTimesResXDiv16;
+    pCB6_ += sevenTimesResXDiv16;
+    pCB7_ += sevenTimesResXDiv16;
+  }
+
+  size_t halfFrameDiv16Quarter = resXdiv16 * pDecoder->resY >> 3;
+  size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
+  size_t resXdiv16Half = resXdiv16 >> 1;
+
+  int first = 1;
+chromaSubSampleBuffer:
+
+  pCB0 = pCB0_;
+  pCB1 = pCB0 + resXdiv16Half;
+  pCB2 = pCB1 + resXdiv16Half;
+  pCB3 = pCB2 + resXdiv16Half;
+  pCB4 = pCB3 + resXdiv16Half;
+  pCB5 = pCB4 + resXdiv16Half;
+  pCB6 = pCB5 + resXdiv16Half;
+  pCB7 = pCB6 + resXdiv16Half;
+  pCB0_ += halfFrameDiv16Quarter;
+  pCB1_ = pCB0_ + resXdiv16Half;
+  pCB2_ = pCB1_ + resXdiv16Half;
+  pCB3_ = pCB2_ + resXdiv16Half;
+  pCB4_ = pCB3_ + resXdiv16Half;
+  pCB5_ = pCB4_ + resXdiv16Half;
+  pCB6_ = pCB5_ + resXdiv16Half;
+  pCB7_ = pCB6_ + resXdiv16Half;
+
+  for (size_t y = 0; y < (pDecoder->resY >> 2); y += 8)
+  {
+    for (size_t x = 0; x < (pDecoder->resX >> 1); x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfUV), *pCB0);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfUV), *pCB1);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfUV), *pCB2);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfUV), *pCB3);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfUV), *pCB4);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfUV), *pCB5);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfUV), *pCB6);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfUV), *pCB7);
+
       pCB0++;
       pCB1++;
       pCB2++;
@@ -723,14 +916,24 @@ slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_
     goto epilogue;
   }
 
-  pDecoder->frameIndex++;
-
-  if (tjDecompressToYUV2(pDecoder->pAdditionalData, (unsigned char *)pData, (unsigned long)length, (unsigned char *)pYUVData, (int)pDecoder->resX, 4, (int)pDecoder->resY, TJFLAG_FASTDCT))
+  if (pDecoder->mode.flags.encoder == 0)
   {
-    slapLog(tjGetErrorStr2(pDecoder->pAdditionalData));
-    result = slapError_Compress_Internal;
-    goto epilogue;
+    if (tjDecompressToYUV2(pDecoder->pAdditionalData, (unsigned char *)pData, (unsigned long)length, (unsigned char *)pYUVData, (int)pDecoder->resX, 4, (int)pDecoder->resY, TJFLAG_FASTDCT))
+    {
+      slapLog(tjGetErrorStr2(pDecoder->pAdditionalData));
+      result = slapError_Compress_Internal;
+      goto epilogue;
+    }
+
+    _slapAddStereoDiff(pDecoder, pYUVData);
+
+    if (pDecoder->frameIndex % pDecoder->iframeStep != 0)
+      _slapAddLastFrameDiff(pDecoder, pYUVData);
+    else
+      slapMemcpy(pDecoder->pLastFrame, pYUVData, pDecoder->resX * pDecoder->resY * 3 / 2);
   }
+
+  pDecoder->frameIndex++;
 
 epilogue:
   return result;
@@ -870,12 +1073,17 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
     goto epilogue;
   }
 
-  if (tjDecompressToYUV2(pFileReader->pDecoder->pAdditionalData, (unsigned char *)pFileReader->pCurrentFrame, (unsigned long)pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV, (int)pFileReader->pDecoder->resX, 32, (int)pFileReader->pDecoder->resY, TJFLAG_FASTDCT))
-  {
-    slapLog(tjGetErrorStr2(pFileReader->pDecoder->pAdditionalData));
-    result = slapError_Compress_Internal;
+  result = slapDecodeFrame(pFileReader->pDecoder, pFileReader->pCurrentFrame, pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV);
+
+  if (result != slapSuccess)
     goto epilogue;
-  }
+
+  //if (tjDecompressToYUV2(pFileReader->pDecoder->pAdditionalData, (unsigned char *)pFileReader->pCurrentFrame, (unsigned long)pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV, (int)pFileReader->pDecoder->resX, 32, (int)pFileReader->pDecoder->resY, TJFLAG_FASTDCT))
+  //{
+  //  slapLog(tjGetErrorStr2(pFileReader->pDecoder->pAdditionalData));
+  //  result = slapError_Compress_Internal;
+  //  goto epilogue;
+  //}
 
 epilogue:
   return result;
