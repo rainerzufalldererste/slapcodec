@@ -16,14 +16,75 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
-void slapMemcpy(void *pDest, void *pSrc, const size_t size)
+void slapMemcpy(OUT void *pDest, IN void *pSrc, const size_t size)
 {
   apex_memcpy(pDest, pSrc, size);
 }
 
-void slapMemmove(void *pDest, void *pSrc, const size_t size)
+void slapMemmove(OUT void *pDest, IN_OUT void *pSrc, const size_t size)
 {
   apex_memmove(pDest, pSrc, size);
+}
+
+slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY)
+{
+  slapResult result = slapSuccess;
+  tjhandle jpegHandle = NULL;
+  unsigned char *pBuffer = NULL;
+  unsigned long bufferSize = 0;
+  FILE *pFile = NULL;
+
+  if (!filename || !pData)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  jpegHandle = tjInitCompress();
+
+  if (!jpegHandle)
+  {
+    result = slapError_Compress_Internal;
+    goto epilogue;
+  }
+
+  if (tjCompressFromYUV(jpegHandle, (unsigned char *)pData, (int)resX, 32, (int)resY, TJSAMP_420, &pBuffer, &bufferSize, 75, 0))
+  {
+    slapLog(tjGetErrorStr2(jpegHandle));
+    result = slapError_Compress_Internal;
+    goto epilogue;
+  }
+
+  pFile = fopen(filename, "wb");
+
+  if (!pFile)
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+  if (bufferSize != fwrite(pBuffer, 1, bufferSize, pFile))
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+epilogue:
+  if (jpegHandle)
+    tjDestroy(jpegHandle);
+
+  if (pBuffer)
+    tjFree(pBuffer);
+
+  if (pFile)
+  {
+    fclose(pFile);
+
+    if (result != slapSuccess)
+      remove(filename);
+  }
+
+  return result;
 }
 
 slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags)
@@ -278,7 +339,7 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
 
     _slapGenSubBufferStereoDiff(pEncoder, pData);
 
-    if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 4, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
+    if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
     {
       slapLog(tjGetErrorStr2(pEncoder->pAdditionalData));
       result = slapError_Compress_Internal;
@@ -640,7 +701,7 @@ slapFileReader * slapCreateFileReader(const char *filename)
   if (!pFileReader->pDecoder)
     goto epilogue;
 
-  frameSize = pFileReader->pDecoder->resX * pFileReader->pDecoder->resX;
+  frameSize = pFileReader->pDecoder->resX * pFileReader->pDecoder->resX * 3 / 2;
 
   pFileReader->pDecodedFrameYUV = slapAlloc(uint8_t, frameSize);
 
@@ -726,6 +787,27 @@ slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
   }
 
   pFileReader->frameIndex++;
+
+epilogue:
+  return result;
+}
+
+slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader)
+{
+  slapResult result = slapSuccess;
+
+  if (!pFileReader)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  if (tjDecompressToYUV2(pFileReader->pDecoder->pAdditionalData, (unsigned char *)pFileReader->pCurrentFrame, (unsigned long)pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV, (int)pFileReader->pDecoder->resX, 32, (int)pFileReader->pDecoder->resY, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pFileReader->pDecoder->pAdditionalData));
+    result = slapError_Compress_Internal;
+    goto epilogue;
+  }
 
 epilogue:
   return result;

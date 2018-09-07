@@ -68,7 +68,7 @@ int main(int argc, char **argv)
 
   clock_t after = clock();
 
-  printf("%d ms.\n", after - before);
+  printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
 
   printf("Finalizing File...\n");
   slapFinalizeFileWriter(pFileWriter);
@@ -83,7 +83,13 @@ int main(int argc, char **argv)
 
   slapResult result;
   frameCount = 0;
-  
+
+  printf("Decoding Frames...\n");
+
+  before = clock();
+
+//#define SAVE_AS_JPEG 1
+
   do
   {
     result = _slapFileReader_ReadNextFrame(pFileReader);
@@ -91,19 +97,28 @@ int main(int argc, char **argv)
     if (result != slapSuccess)
       break;
 
+    result = _slapFileReader_DecodeCurrentFrameFull(pFileReader);
+
+    if (result != slapSuccess)
+      break;
+
     frameCount++;
 
+#ifdef SAVE_AS_JPEG
     char fname[255];
     sprintf_s(fname, 255, "%s-%" PRIu64 ".jpg", argv[2], frameCount);
 
-    FILE *pFrame = fopen(fname, "wb");
-
-    fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFrame);
-    fclose(pFrame);
-
+    slapWriteJpegFromYUV(fname, pFileReader->pDecodedFrameYUV, 7680, 7680);
+#endif
   } while (1);
+  
+  after = clock();
 
-  printf("Frame Count: %" PRIu64 ".\n", frameCount);
+#ifndef SAVE_AS_JPEG
+  printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
+#endif
+
+  printf("Frame Count: %" PRIu64 "\n", frameCount);
 
   printf("Destroying File Reader...\n");
   slapDestroyFileReader(&pFileReader);

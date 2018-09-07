@@ -44,8 +44,8 @@
 extern "C" {
 #endif
 
-  void slapMemcpy(void *pDest, void *pSrc, const size_t size);
-  void slapMemmove(void *pDest, void *pSrc, const size_t size);
+  void slapMemcpy(OUT void *pDest, IN void *pSrc, const size_t size);
+  void slapMemmove(OUT void *pDest, IN_OUT void *pSrc, const size_t size);
 
   typedef enum slapResult
   {
@@ -57,6 +57,8 @@ extern "C" {
     slapError_EndOfStream,
     slapError_MemoryAllocation
   } slapResult;
+
+  slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY);
 
 #define SLAP_FLAG_STEREO 1
 
@@ -161,7 +163,7 @@ extern "C" {
   void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader);
 
   slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader);
-  slapResult _slapFileReader_DecodeNextFrame(IN slapFileReader *pFileReader);
+  slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader);
 
 #ifdef __cplusplus
 }
