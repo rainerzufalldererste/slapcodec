@@ -62,7 +62,7 @@ int main(int argc, char **argv)
 
   for (size_t i = 0; i < frameCount; i++)
   {
-    memcpy(pBuffer2, pBuffer, 7680 * 11520);
+    slapMemcpy(pBuffer2, pBuffer, 7680 * 11520);
     slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer2);
   }
 

@@ -44,6 +44,9 @@
 extern "C" {
 #endif
 
+  void slapMemcpy(void *pDest, void *pSrc, const size_t size);
+  void slapMemmove(void *pDest, void *pSrc, const size_t size);
+
   typedef enum slapResult
   {
     slapSuccess,
