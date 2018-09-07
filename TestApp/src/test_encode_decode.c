@@ -11,13 +11,18 @@
 
 int main(int argc, char **argv)
 {
-  void *pBuffer = NULL;
-  void *pBuffer2 = NULL;
+  void *pFileData = NULL;
+  void *pFrame = NULL;
   int retval = 0;
+  char *origFile = NULL;
+  char *slapFile = NULL;
 
   if (argc > 2)
   {
-    FILE *pFile = fopen(argv[1], "rb");
+    origFile = argv[1];
+    slapFile = argv[2];
+
+    FILE *pFile = fopen(origFile, "rb");
 
     if (!pFile)
     {
@@ -30,20 +35,23 @@ int main(int argc, char **argv)
     size_t size = ftell(pFile);
     fseek(pFile, 0, SEEK_SET);
 
-    pBuffer = malloc(7680 * 11520);
-    printf("Start: 0x%" PRIx64 ", End: 0x%" PRIx64 ".\n", (uint64_t)pBuffer, (uint64_t)((uint8_t *)pBuffer + 7680 * 11520));
+    pFileData = malloc(7680 * 11520);
 
-    if (!pBuffer)
+    if (!pFileData)
     {
       printf("Memory allocation failure.");
       retval = 1;
       goto epilogue;
     }
 
-    size_t readBytes = fread(pBuffer, 1, size, pFile);
+    size_t readBytes = fread(pFileData, 1, size, pFile);
     printf("Read %" PRIu64 " bytes from '%s'.\n", readBytes, argv[1]);
 
     fclose(pFile);
+  }
+  else if (argc == 2)
+  {
+    slapFile = argv[1];
   }
   else
   {
@@ -51,35 +59,42 @@ int main(int argc, char **argv)
     goto epilogue;
   }
 
-  printf("Creating File Writer...\n");
-  slapFileWriter *pFileWriter = slapCreateFileWriter(argv[2], 7680, 7680, SLAP_FLAG_STEREO);
+  size_t frameCount;
+  clock_t before;
+  clock_t after;
 
-  size_t frameCount = 10;
-  printf("Adding %" PRIu64 " frames...\n", frameCount);
-
-  pBuffer2 = malloc(7680 * 11520);
-  clock_t before = clock();
-
-  for (size_t i = 0; i < frameCount; i++)
+  if (origFile)
   {
-    slapMemcpy(pBuffer2, pBuffer, 7680 * 11520);
-    slapFileWriter_AddFrameYUV420(pFileWriter, pBuffer2);
+    printf("Creating File Writer...\n");
+    slapFileWriter *pFileWriter = slapCreateFileWriter(slapFile, 7680, 7680, SLAP_FLAG_STEREO);
+
+    frameCount = 10;
+    printf("Adding %" PRIu64 " frames...\n", frameCount);
+
+    pFrame = malloc(7680 * 11520);
+    before = clock();
+
+    for (size_t i = 0; i < frameCount; i++)
+    {
+      slapMemcpy(pFrame, pFileData, 7680 * 11520);
+      slapFileWriter_AddFrameYUV420(pFileWriter, pFrame);
+    }
+
+    after = clock();
+
+    printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
+
+    printf("Finalizing File...\n");
+    slapFinalizeFileWriter(pFileWriter);
+
+    printf("Destroying File Writer...\n");
+    slapDestroyFileWriter(&pFileWriter);
+
+    printf("Encoding Done.\n");
   }
 
-  clock_t after = clock();
-
-  printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
-
-  printf("Finalizing File...\n");
-  slapFinalizeFileWriter(pFileWriter);
-
-  printf("Destroying File Writer...\n");
-  slapDestroyFileWriter(&pFileWriter);
-
-  printf("Encoding Done.\n");
-
   printf("Creating File Reader...\n");
-  slapFileReader *pFileReader = slapCreateFileReader(argv[2]);
+  slapFileReader *pFileReader = slapCreateFileReader(slapFile);
 
   slapResult result;
   frameCount = 0;
@@ -88,7 +103,7 @@ int main(int argc, char **argv)
 
   before = clock();
 
-//#define SAVE_AS_JPEG 1
+#define SAVE_AS_JPEG 1
 
   do
   {
@@ -106,7 +121,7 @@ int main(int argc, char **argv)
 
 #ifdef SAVE_AS_JPEG
     char fname[255];
-    sprintf_s(fname, 255, "%s-%" PRIu64 ".jpg", argv[2], frameCount);
+    sprintf_s(fname, 255, "%s-%" PRIu64 ".jpg", slapFile, frameCount);
 
     slapWriteJpegFromYUV(fname, pFileReader->pDecodedFrameYUV, 7680, 7680);
 #endif
@@ -124,6 +139,7 @@ int main(int argc, char **argv)
   slapDestroyFileReader(&pFileReader);
 
 epilogue:
-  free(pBuffer);
+  free(pFileData);
+  free(pFrame);
   return retval;
 }
