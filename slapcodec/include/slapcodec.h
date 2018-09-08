@@ -86,7 +86,8 @@ extern "C" {
     mode mode;
 
     int quality;
-    void *pAdditionalData;
+    void *pEncoderInternal;
+    void *pDecoderInternal;
     unsigned long __data0;
   } slapEncoder;
 
@@ -95,8 +96,8 @@ extern "C" {
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
 
-  // @param *ppCompressedData should be NULL on when the first frame is added.
-  slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize);
+  // @param *ppCompressedData: should be NULL on when the first frame is added.
+  slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize);
 
 #define SLAP_HEADER_BLOCK_SIZE 1024
 

@@ -16,6 +16,9 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
+// encoder decodes the frame to reduce artifacts after multiple intraframes.
+#define SLAP_ENCODER_DECODED_IFRAME_DIFF 1
+
 void slapMemcpy(OUT void *pDest, IN void *pSrc, const size_t size)
 {
   apex_memcpy(pDest, pSrc, size);
@@ -122,10 +125,17 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
   if (!pEncoder->pLastFrame)
     goto epilogue;
 
-  pEncoder->pAdditionalData = tjInitCompress();
+  pEncoder->pEncoderInternal = tjInitCompress();
 
-  if (!pEncoder->pAdditionalData)
+  if (!pEncoder->pEncoderInternal)
     goto epilogue;
+
+#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+  pEncoder->pDecoderInternal = tjInitDecompress();
+
+  if (!pEncoder->pDecoderInternal)
+    goto epilogue;
+#endif
 
   return pEncoder;
 
@@ -133,8 +143,13 @@ epilogue:
   if (pEncoder->pLowResData)
     slapFreePtr(&pEncoder->pLowResData);
 
-  if (pEncoder->pAdditionalData)
-    tjDestroy(pEncoder->pAdditionalData);
+  if (pEncoder->pEncoderInternal)
+    tjDestroy(pEncoder->pEncoderInternal);
+
+#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+  if (pEncoder->pDecoderInternal)
+    tjDestroy(pEncoder->pDecoderInternal);
+#endif
 
   if ((pEncoder)->pLastFrame)
     slapFreePtr(&(pEncoder)->pLastFrame);
@@ -148,8 +163,13 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
 {
   if (ppEncoder && *ppEncoder)
   {
-    if ((*ppEncoder)->pAdditionalData)
-      tjDestroy((*ppEncoder)->pAdditionalData);
+    if ((*ppEncoder)->pEncoderInternal)
+      tjDestroy((*ppEncoder)->pEncoderInternal);
+
+#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+    if ((*ppEncoder)->pDecoderInternal)
+      tjDestroy((*ppEncoder)->pDecoderInternal);
+#endif
 
     if ((*ppEncoder)->pLowResData)
       slapFreePtr(&(*ppEncoder)->pLowResData);
@@ -168,9 +188,9 @@ slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder)
   return slapSuccess;
 }
 
-void _slapLastFrameDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
+void _slapLastFrameDiff420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
 {
-  __m128i *pLastFrameYUV = (__m128i *)pEncoder->pLastFrame;
+  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
   __m128i *pCurrentFrameYUV = (__m128i *)pData;
 
   __m128i *pLF0 = (__m128i *)pLastFrameYUV;
@@ -178,12 +198,16 @@ void _slapLastFrameDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
   
   __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
 
-  size_t max = (pEncoder->resX * pEncoder->resY * 3 / 2) >> 4;
+  size_t max = (resX * resY * 3 / 2) >> 4;
 
   for (size_t i = 0; i < max; i++)
   {
-    __m128i nb = _mm_add_epi8(_mm_sub_epi8(*pLF0, *pCF0), half);
-    _mm_store_si128(pLF0, *pCF0);
+    __m128i lf0 = _mm_load_si128(pLF0);
+    __m128i cf0 = _mm_load_si128(pCF0);
+    __m128i nb = _mm_add_epi8(_mm_sub_epi8(lf0, cf0), half);
+#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
+    _mm_store_si128(pLF0, cf0);
+#endif
     _mm_store_si128(pCF0, nb);
 
     pLF0++;
@@ -191,9 +215,9 @@ void _slapLastFrameDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
   }
 }
 
-void _slapAddLastFrameDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
+void _slapAddLastFrameDiff420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
 {
-  __m128i *pLastFrameYUV = (__m128i *)pDecoder->pLastFrame;
+  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
   __m128i *pCurrentFrameYUV = (__m128i *)pData;
 
   __m128i *pLF0 = (__m128i *)pLastFrameYUV;
@@ -202,7 +226,7 @@ void _slapAddLastFrameDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
   __m128i halfY = { 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129 };
   __m128i halfUV = { 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130 };
 
-  size_t max = (pDecoder->resX * pDecoder->resY) >> 4;
+  size_t max = (resX * resY) >> 4;
 
   for (size_t i = 0; i < max; i++)
   {
@@ -227,7 +251,7 @@ void _slapAddLastFrameDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
   }
 }
 
-void _slapGenSubBufferStereoDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
+void _slapGenSubBufferAndStereoDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
 {
   uint8_t *pMainFrameY = (uint8_t *)pData;
   uint16_t *pSubFrameYUV = (uint16_t *)pEncoder->pLowResData;
@@ -392,11 +416,11 @@ chromaSubSampleBuffer:
   }
 }
 
-void _slapAddStereoDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
+void _slapAddStereoDiff(IN_OUT void *pData, const size_t resX, const size_t resY)
 {
   uint8_t *pMainFrameY = (uint8_t *)pData;
 
-  size_t resXdiv16 = pDecoder->resX >> 4;
+  size_t resXdiv16 = resX >> 4;
   size_t sevenTimesResXDiv16 = resXdiv16 * 7;
 
   __m128i *pCB0 = (__m128i *)pMainFrameY;
@@ -408,7 +432,7 @@ void _slapAddStereoDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
   __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
   __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
 
-  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (pDecoder->resY >> 1);
+  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (resY >> 1);
   __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
   __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
   __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
@@ -417,12 +441,12 @@ void _slapAddStereoDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
   __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
   __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
 
-  __m128i halfY = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+  __m128i halfY = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
   __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
 
-  for (size_t y = 0; y < (pDecoder->resY >> 1); y += 8)
+  for (size_t y = 0; y < (resY >> 1); y += 8)
   {
-    for (size_t x = 0; x < pDecoder->resX; x += 16)
+    for (size_t x = 0; x < resX; x += 16)
     {
       *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfY), *pCB0);
       *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfY), *pCB1);
@@ -469,7 +493,7 @@ void _slapAddStereoDiff(IN slapDecoder *pDecoder, IN_OUT void *pData)
     pCB7_ += sevenTimesResXDiv16;
   }
 
-  size_t halfFrameDiv16Quarter = resXdiv16 * pDecoder->resY >> 3;
+  size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
   size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
   size_t resXdiv16Half = resXdiv16 >> 1;
 
@@ -493,9 +517,9 @@ chromaSubSampleBuffer:
   pCB6_ = pCB5_ + resXdiv16Half;
   pCB7_ = pCB6_ + resXdiv16Half;
 
-  for (size_t y = 0; y < (pDecoder->resY >> 2); y += 8)
+  for (size_t y = 0; y < (resY >> 2); y += 8)
   {
-    for (size_t x = 0; x < (pDecoder->resX >> 1); x += 16)
+    for (size_t x = 0; x < (resX >> 1); x += 16)
     {
       *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfUV), *pCB0);
       *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfUV), *pCB1);
@@ -549,7 +573,7 @@ chromaSubSampleBuffer:
   }
 }
 
-slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize)
+slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize)
 {
   slapResult result = slapSuccess;
 
@@ -562,20 +586,46 @@ slapResult slapAddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void
   if (pEncoder->mode.flags.encoder == 0)
   {
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
-      _slapLastFrameDiff(pEncoder, pData);
+      _slapLastFrameDiff420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
     else
       slapMemcpy(pEncoder->pLastFrame, pData, pEncoder->resX * pEncoder->resY * 3 / 2);
 
-    _slapGenSubBufferStereoDiff(pEncoder, pData);
+    _slapGenSubBufferAndStereoDiff(pEncoder, pData);
 
-    if (tjCompressFromYUV(pEncoder->pAdditionalData, (unsigned char *)pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
+    if (tjCompressFromYUV(pEncoder->pEncoderInternal, (unsigned char *)pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
     {
-      slapLog(tjGetErrorStr2(pEncoder->pAdditionalData));
+      slapLog(tjGetErrorStr2(pEncoder->pEncoderInternal));
       result = slapError_Compress_Internal;
       goto epilogue;
     }
 
     *pSize = pEncoder->__data0;
+
+#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+    if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
+    {
+      if (tjDecompressToYUV2(pEncoder->pDecoderInternal, *ppCompressedData, pEncoder->__data0, pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJFLAG_FASTDCT))
+      {
+        slapLog(tjGetErrorStr2(pEncoder->pEncoderInternal));
+        result = slapError_Compress_Internal;
+        goto epilogue;
+      }
+
+      _slapAddStereoDiff(pData, pEncoder->resX, pEncoder->resY);
+      _slapAddLastFrameDiff420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
+    }
+    else
+    {
+      if (tjDecompressToYUV2(pEncoder->pDecoderInternal, *ppCompressedData, pEncoder->__data0, pEncoder->pLastFrame, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJFLAG_FASTDCT))
+      {
+        slapLog(tjGetErrorStr2(pEncoder->pEncoderInternal));
+        result = slapError_Compress_Internal;
+        goto epilogue;
+      }
+
+      _slapAddStereoDiff(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+    }
+#endif
   }
 
   pEncoder->frameIndex++;
@@ -812,7 +862,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     goto epilogue;
   }
 
-  result = slapAddFrameYUV420(pFileWriter->pEncoder, pData, &pFileWriter->pData, &dataSize);
+  result = slapEncoder_AddFrameYUV420(pFileWriter->pEncoder, pData, &pFileWriter->pData, &dataSize);
 
   if (result != slapSuccess)
     goto epilogue;
@@ -925,10 +975,10 @@ slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_
       goto epilogue;
     }
 
-    _slapAddStereoDiff(pDecoder, pYUVData);
+    _slapAddStereoDiff(pYUVData, pDecoder->resX, pDecoder->resY);
 
     if (pDecoder->frameIndex % pDecoder->iframeStep != 0)
-      _slapAddLastFrameDiff(pDecoder, pYUVData);
+      _slapAddLastFrameDiff420(pDecoder->pLastFrame, pYUVData, pDecoder->resX, pDecoder->resY);
     else
       slapMemcpy(pDecoder->pLastFrame, pYUVData, pDecoder->resX * pDecoder->resY * 3 / 2);
   }
