@@ -19,6 +19,19 @@
 // encoder decodes the frame to reduce artifacts after multiple intraframes.
 #define SLAP_ENCODER_DECODED_IFRAME_DIFF 1
 
+slapResult _slapCompressChannel(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor);
+slapResult _slapCompressYUV420(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor);
+slapResult _slapDecompressChannel(IN void *pData, IN_OUT void *pCompressedData, const size_t compressedDataSize, const size_t width, const size_t height, IN void *pDecompressor);
+slapResult _slapDecompressYUV420(IN void *pData, IN_OUT void *pCompressedData, const size_t compressedDataSize, const size_t width, const size_t height, IN void *pDecompressor);
+void _slapLastFrameDiffYUV420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY);
+void _slapAddLastFrameDiffYUV420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY);
+void _slapGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, OUT void *pLowResData, const size_t resX, const size_t resY);
+void _slapAddStereoDiffYUV420(IN_OUT void *pData, const size_t resX, const size_t resY);
+void _slapAddStereoDiffYUV420AndCopyToLastFrame(IN_OUT void *pData, OUT void *pLastFrame, const size_t resX, const size_t resY);
+void _slapAddStereoDiffYUV420AndAddLastFrameDiff(IN_OUT void *pData, OUT void *pLastFrame, const size_t resX, const size_t resY);
+
+//////////////////////////////////////////////////////////////////////////
+
 void slapMemcpy(OUT void *pDest, IN void *pSrc, const size_t size)
 {
   apex_memcpy(pDest, pSrc, size);
@@ -188,391 +201,6 @@ slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder)
   return slapSuccess;
 }
 
-void _slapLastFrameDiff420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
-{
-  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
-  __m128i *pCurrentFrameYUV = (__m128i *)pData;
-
-  __m128i *pLF0 = (__m128i *)pLastFrameYUV;
-  __m128i *pCF0 = (__m128i *)pCurrentFrameYUV;
-  
-  __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
-
-  size_t max = (resX * resY * 3 / 2) >> 4;
-
-  for (size_t i = 0; i < max; i++)
-  {
-    __m128i lf0 = _mm_load_si128(pLF0);
-    __m128i cf0 = _mm_load_si128(pCF0);
-    __m128i nb = _mm_add_epi8(_mm_sub_epi8(lf0, cf0), half);
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-    _mm_store_si128(pLF0, cf0);
-#endif
-    _mm_store_si128(pCF0, nb);
-
-    pLF0++;
-    pCF0++;
-  }
-}
-
-void _slapAddLastFrameDiff420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
-{
-  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
-  __m128i *pCurrentFrameYUV = (__m128i *)pData;
-
-  __m128i *pLF0 = (__m128i *)pLastFrameYUV;
-  __m128i *pCF0 = (__m128i *)pCurrentFrameYUV;
-
-  __m128i halfY = { 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129 };
-  __m128i halfUV = { 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130 };
-
-  size_t max = (resX * resY) >> 4;
-
-  for (size_t i = 0; i < max; i++)
-  {
-    __m128i nb = _mm_sub_epi8(*pLF0, _mm_add_epi8(*pCF0, halfY));
-    _mm_store_si128(pLF0, nb);
-    _mm_store_si128(pCF0, nb);
-
-    pLF0++;
-    pCF0++;
-  }
-
-  max >>= 1;
-
-  for (size_t i = 0; i < max; i++)
-  {
-    __m128i nb = _mm_sub_epi8(*pLF0, _mm_add_epi8(*pCF0, halfUV));
-    _mm_store_si128(pLF0, nb);
-    _mm_store_si128(pCF0, nb);
-
-    pLF0++;
-    pCF0++;
-  }
-}
-
-void _slapGenSubBufferAndStereoDiff(IN slapEncoder *pEncoder, IN_OUT void *pData)
-{
-  uint8_t *pMainFrameY = (uint8_t *)pData;
-  uint16_t *pSubFrameYUV = (uint16_t *)pEncoder->pLowResData;
-
-  size_t resXdiv16 = pEncoder->resX >> 4;
-  size_t sevenTimesResXDiv16 = resXdiv16 * 7;
-
-  __m128i *pCB0 = (__m128i *)pMainFrameY;
-  __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
-  __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
-  __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
-  __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
-  __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
-  __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
-  __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
-
-  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (pEncoder->resY >> 1);
-  __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
-  __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
-  __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
-  __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
-  __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
-  __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
-  __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
-
-  __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
-
-  for (size_t y = 0; y < (pEncoder->resY >> 1); y += 8)
-  {
-    for (size_t x = 0; x < pEncoder->resX; x += 16)
-    {
-      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
-      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
-      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
-      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
-      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
-      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
-      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
-      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
-
-      __m128i v = _mm_srli_si128(*pCB0, 7);
-      *pSubFrameYUV = *(uint16_t *)&v;
-
-      pSubFrameYUV++;
-      pCB0++;
-      pCB1++;
-      pCB2++;
-      pCB3++;
-      pCB4++;
-      pCB5++;
-      pCB6++;
-      pCB7++;
-      pCB0_++;
-      pCB1_++;
-      pCB2_++;
-      pCB3_++;
-      pCB4_++;
-      pCB5_++;
-      pCB6_++;
-      pCB7_++;
-    }
-
-    pCB0 += sevenTimesResXDiv16;
-    pCB1 += sevenTimesResXDiv16;
-    pCB2 += sevenTimesResXDiv16;
-    pCB3 += sevenTimesResXDiv16;
-    pCB4 += sevenTimesResXDiv16;
-    pCB5 += sevenTimesResXDiv16;
-    pCB6 += sevenTimesResXDiv16;
-    pCB7 += sevenTimesResXDiv16;
-    pCB0_ += sevenTimesResXDiv16;
-    pCB1_ += sevenTimesResXDiv16;
-    pCB2_ += sevenTimesResXDiv16;
-    pCB3_ += sevenTimesResXDiv16;
-    pCB4_ += sevenTimesResXDiv16;
-    pCB5_ += sevenTimesResXDiv16;
-    pCB6_ += sevenTimesResXDiv16;
-    pCB7_ += sevenTimesResXDiv16;
-  }
-
-  size_t halfFrameDiv16Quarter = resXdiv16 * pEncoder->resY >> 3;
-  size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
-  size_t resXdiv16Half = resXdiv16 >> 1;
-
-  int first = 1;
-chromaSubSampleBuffer:
-
-  pCB0 = pCB0_;
-  pCB1 = pCB0 + resXdiv16Half;
-  pCB2 = pCB1 + resXdiv16Half;
-  pCB3 = pCB2 + resXdiv16Half;
-  pCB4 = pCB3 + resXdiv16Half;
-  pCB5 = pCB4 + resXdiv16Half;
-  pCB6 = pCB5 + resXdiv16Half;
-  pCB7 = pCB6 + resXdiv16Half;
-  pCB0_ += halfFrameDiv16Quarter;
-  pCB1_ = pCB0_ + resXdiv16Half;
-  pCB2_ = pCB1_ + resXdiv16Half;
-  pCB3_ = pCB2_ + resXdiv16Half;
-  pCB4_ = pCB3_ + resXdiv16Half;
-  pCB5_ = pCB4_ + resXdiv16Half;
-  pCB6_ = pCB5_ + resXdiv16Half;
-  pCB7_ = pCB6_ + resXdiv16Half;
-
-  for (size_t y = 0; y < (pEncoder->resY >> 2); y += 8)
-  {
-    for (size_t x = 0; x < (pEncoder->resX >> 1); x += 16)
-    {
-      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
-      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
-      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
-      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
-      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
-      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
-      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
-      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
-
-      __m128i v = _mm_srli_si128(*pCB0, 7);
-      *pSubFrameYUV = *(uint16_t *)&v;
-
-      pSubFrameYUV++;
-      pCB0++;
-      pCB1++;
-      pCB2++;
-      pCB3++;
-      pCB4++;
-      pCB5++;
-      pCB6++;
-      pCB7++;
-      pCB0_++;
-      pCB1_++;
-      pCB2_++;
-      pCB3_++;
-      pCB4_++;
-      pCB5_++;
-      pCB6_++;
-      pCB7_++;
-    }
-
-    pCB0 += sevenTimesResXDiv16Half;
-    pCB1 += sevenTimesResXDiv16Half;
-    pCB2 += sevenTimesResXDiv16Half;
-    pCB3 += sevenTimesResXDiv16Half;
-    pCB4 += sevenTimesResXDiv16Half;
-    pCB5 += sevenTimesResXDiv16Half;
-    pCB6 += sevenTimesResXDiv16Half;
-    pCB7 += sevenTimesResXDiv16Half;
-    pCB0_ += sevenTimesResXDiv16Half;
-    pCB1_ += sevenTimesResXDiv16Half;
-    pCB2_ += sevenTimesResXDiv16Half;
-    pCB3_ += sevenTimesResXDiv16Half;
-    pCB4_ += sevenTimesResXDiv16Half;
-    pCB5_ += sevenTimesResXDiv16Half;
-    pCB6_ += sevenTimesResXDiv16Half;
-    pCB7_ += sevenTimesResXDiv16Half;
-  }
-
-  if (first)
-  {
-    first = 0;
-    goto chromaSubSampleBuffer;
-  }
-}
-
-void _slapAddStereoDiff(IN_OUT void *pData, const size_t resX, const size_t resY)
-{
-  uint8_t *pMainFrameY = (uint8_t *)pData;
-
-  size_t resXdiv16 = resX >> 4;
-  size_t sevenTimesResXDiv16 = resXdiv16 * 7;
-
-  __m128i *pCB0 = (__m128i *)pMainFrameY;
-  __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
-  __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
-  __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
-  __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
-  __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
-  __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
-  __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
-
-  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (resY >> 1);
-  __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
-  __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
-  __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
-  __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
-  __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
-  __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
-  __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
-
-  __m128i halfY = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
-  __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
-
-  for (size_t y = 0; y < (resY >> 1); y += 8)
-  {
-    for (size_t x = 0; x < resX; x += 16)
-    {
-      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfY), *pCB0);
-      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfY), *pCB1);
-      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfY), *pCB2);
-      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfY), *pCB3);
-      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfY), *pCB4);
-      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfY), *pCB5);
-      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfY), *pCB6);
-      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfY), *pCB7);
-
-      pCB0++;
-      pCB1++;
-      pCB2++;
-      pCB3++;
-      pCB4++;
-      pCB5++;
-      pCB6++;
-      pCB7++;
-      pCB0_++;
-      pCB1_++;
-      pCB2_++;
-      pCB3_++;
-      pCB4_++;
-      pCB5_++;
-      pCB6_++;
-      pCB7_++;
-    }
-
-    pCB0 += sevenTimesResXDiv16;
-    pCB1 += sevenTimesResXDiv16;
-    pCB2 += sevenTimesResXDiv16;
-    pCB3 += sevenTimesResXDiv16;
-    pCB4 += sevenTimesResXDiv16;
-    pCB5 += sevenTimesResXDiv16;
-    pCB6 += sevenTimesResXDiv16;
-    pCB7 += sevenTimesResXDiv16;
-    pCB0_ += sevenTimesResXDiv16;
-    pCB1_ += sevenTimesResXDiv16;
-    pCB2_ += sevenTimesResXDiv16;
-    pCB3_ += sevenTimesResXDiv16;
-    pCB4_ += sevenTimesResXDiv16;
-    pCB5_ += sevenTimesResXDiv16;
-    pCB6_ += sevenTimesResXDiv16;
-    pCB7_ += sevenTimesResXDiv16;
-  }
-
-  size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
-  size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
-  size_t resXdiv16Half = resXdiv16 >> 1;
-
-  int first = 1;
-chromaSubSampleBuffer:
-
-  pCB0 = pCB0_;
-  pCB1 = pCB0 + resXdiv16Half;
-  pCB2 = pCB1 + resXdiv16Half;
-  pCB3 = pCB2 + resXdiv16Half;
-  pCB4 = pCB3 + resXdiv16Half;
-  pCB5 = pCB4 + resXdiv16Half;
-  pCB6 = pCB5 + resXdiv16Half;
-  pCB7 = pCB6 + resXdiv16Half;
-  pCB0_ += halfFrameDiv16Quarter;
-  pCB1_ = pCB0_ + resXdiv16Half;
-  pCB2_ = pCB1_ + resXdiv16Half;
-  pCB3_ = pCB2_ + resXdiv16Half;
-  pCB4_ = pCB3_ + resXdiv16Half;
-  pCB5_ = pCB4_ + resXdiv16Half;
-  pCB6_ = pCB5_ + resXdiv16Half;
-  pCB7_ = pCB6_ + resXdiv16Half;
-
-  for (size_t y = 0; y < (resY >> 2); y += 8)
-  {
-    for (size_t x = 0; x < (resX >> 1); x += 16)
-    {
-      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfUV), *pCB0);
-      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfUV), *pCB1);
-      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfUV), *pCB2);
-      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfUV), *pCB3);
-      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfUV), *pCB4);
-      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfUV), *pCB5);
-      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfUV), *pCB6);
-      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfUV), *pCB7);
-
-      pCB0++;
-      pCB1++;
-      pCB2++;
-      pCB3++;
-      pCB4++;
-      pCB5++;
-      pCB6++;
-      pCB7++;
-      pCB0_++;
-      pCB1_++;
-      pCB2_++;
-      pCB3_++;
-      pCB4_++;
-      pCB5_++;
-      pCB6_++;
-      pCB7_++;
-    }
-
-    pCB0 += sevenTimesResXDiv16Half;
-    pCB1 += sevenTimesResXDiv16Half;
-    pCB2 += sevenTimesResXDiv16Half;
-    pCB3 += sevenTimesResXDiv16Half;
-    pCB4 += sevenTimesResXDiv16Half;
-    pCB5 += sevenTimesResXDiv16Half;
-    pCB6 += sevenTimesResXDiv16Half;
-    pCB7 += sevenTimesResXDiv16Half;
-    pCB0_ += sevenTimesResXDiv16Half;
-    pCB1_ += sevenTimesResXDiv16Half;
-    pCB2_ += sevenTimesResXDiv16Half;
-    pCB3_ += sevenTimesResXDiv16Half;
-    pCB4_ += sevenTimesResXDiv16Half;
-    pCB5_ += sevenTimesResXDiv16Half;
-    pCB6_ += sevenTimesResXDiv16Half;
-    pCB7_ += sevenTimesResXDiv16Half;
-  }
-
-  if (first)
-  {
-    first = 0;
-    goto chromaSubSampleBuffer;
-  }
-}
-
 slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize)
 {
   slapResult result = slapSuccess;
@@ -586,11 +214,11 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
   if (pEncoder->mode.flags.encoder == 0)
   {
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
-      _slapLastFrameDiff420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
+      _slapLastFrameDiffYUV420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
     else
       slapMemcpy(pEncoder->pLastFrame, pData, pEncoder->resX * pEncoder->resY * 3 / 2);
 
-    _slapGenSubBufferAndStereoDiff(pEncoder, pData);
+    _slapGenSubBufferAndStereoDiffYUV420(pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);
 
     if (tjCompressFromYUV(pEncoder->pEncoderInternal, (unsigned char *)pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->__data0, pEncoder->quality, TJFLAG_FASTDCT))
     {
@@ -611,8 +239,9 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
         goto epilogue;
       }
 
-      _slapAddStereoDiff(pData, pEncoder->resX, pEncoder->resY);
-      _slapAddLastFrameDiff420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
+      _slapAddStereoDiffYUV420AndAddLastFrameDiff(pData, pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+      //_slapAddStereoDiffYUV420(pData, pEncoder->resX, pEncoder->resY);
+      //_slapAddLastFrameDiffYUV420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
     }
     else
     {
@@ -623,7 +252,7 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
         goto epilogue;
       }
 
-      _slapAddStereoDiff(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+      _slapAddStereoDiffYUV420(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
     }
 #endif
   }
@@ -975,12 +604,16 @@ slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_
       goto epilogue;
     }
 
-    _slapAddStereoDiff(pYUVData, pDecoder->resX, pDecoder->resY);
-
     if (pDecoder->frameIndex % pDecoder->iframeStep != 0)
-      _slapAddLastFrameDiff420(pDecoder->pLastFrame, pYUVData, pDecoder->resX, pDecoder->resY);
+    {
+      //_slapAddStereoDiffYUV420(pYUVData, pDecoder->resX, pDecoder->resY);
+      _slapAddStereoDiffYUV420AndAddLastFrameDiff(pYUVData, pDecoder->pLastFrame, pDecoder->resX, pDecoder->resY); //_slapAddLastFrameDiffYUV420(pDecoder->pLastFrame, pYUVData, pDecoder->resX, pDecoder->resY);
+    }
     else
-      slapMemcpy(pDecoder->pLastFrame, pYUVData, pDecoder->resX * pDecoder->resY * 3 / 2);
+    {
+      //_slapAddStereoDiffYUV420(pYUVData, pDecoder->resX, pDecoder->resY);
+      _slapAddStereoDiffYUV420AndCopyToLastFrame(pYUVData, pDecoder->pLastFrame, pDecoder->resX, pDecoder->resY); //_slapMemcpy(pDecoder->pLastFrame, pYUVData, pDecoder->resX * pDecoder->resY * 3 / 2);
+    }
   }
 
   pDecoder->frameIndex++;
@@ -1079,8 +712,8 @@ slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
     goto epilogue;
   }
 
-  position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex] + pFileReader->headerOffset;
-  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + 1];
+  position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_OFFSET_INDEX] + pFileReader->headerOffset;
+  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
 
   if (pFileReader->currentFrameAllocatedSize < pFileReader->currentFrameSize)
   {
@@ -1130,4 +763,616 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
 
 epilogue:
   return result;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Core En- & Decoding Functions
+//////////////////////////////////////////////////////////////////////////
+
+slapResult _slapCompressChannel(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor)
+{
+  unsigned long length = (unsigned long)*pCompressedDataSize;
+
+  if (tjCompress2(pCompressor, (unsigned char *)pData, (int)width, 32, (int)height, TJPF_GRAY, (unsigned char **)ppCompressedData, &length, TJSAMP_GRAY, quality, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pCompressor));
+    return slapError_Compress_Internal;
+  }
+
+  *pCompressedDataSize = length;
+
+  return slapSuccess;
+}
+
+slapResult _slapCompressYUV420(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor)
+{
+  unsigned long length = (unsigned long)*pCompressedDataSize;
+
+  if (tjCompressFromYUV(pCompressor, (unsigned char *)pData, (int)width, 32, (int)height, TJSAMP_420, (unsigned char **)ppCompressedData, &length, quality, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pCompressor));
+    return slapError_Compress_Internal;
+  }
+
+  *pCompressedDataSize = length;
+
+  return slapSuccess;
+}
+
+slapResult _slapDecompressChannel(IN void *pData, IN_OUT void *pCompressedData, const size_t compressedDataSize, const size_t width, const size_t height, IN void *pDecompressor)
+{
+  if (tjDecompress2(pDecompressor, (unsigned char *)pCompressedData, (unsigned long)compressedDataSize, (unsigned char *)pData, (int)width, 32, (int)height, TJPF_GRAY, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pDecompressor));
+    return slapError_Compress_Internal;
+  }
+
+  return slapSuccess;
+}
+
+slapResult _slapDecompressYUV420(IN void *pData, IN_OUT void *pCompressedData, const size_t compressedDataSize, const size_t width, const size_t height, IN void *pDecompressor)
+{
+  if (tjDecompressToYUV2(pDecompressor, (unsigned char *)pCompressedData, (unsigned long)compressedDataSize, (unsigned char *)pData, (int)width, 32, (int)height, TJFLAG_FASTDCT))
+  {
+    slapLog(tjGetErrorStr2(pDecompressor));
+    return slapError_Compress_Internal;
+  }
+
+  return slapSuccess;
+}
+
+void _slapLastFrameDiffYUV420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
+{
+  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
+  __m128i *pCurrentFrameYUV = (__m128i *)pData;
+
+  __m128i *pLF0 = (__m128i *)pLastFrameYUV;
+  __m128i *pCF0 = (__m128i *)pCurrentFrameYUV;
+
+  __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+
+  size_t max = (resX * resY * 3 / 2) >> 4;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i lf0 = _mm_load_si128(pLF0);
+    __m128i cf0 = _mm_load_si128(pCF0);
+    __m128i nb = _mm_add_epi8(_mm_sub_epi8(lf0, cf0), half);
+#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
+    _mm_store_si128(pLF0, cf0);
+#endif
+    _mm_store_si128(pCF0, nb);
+
+    pLF0++;
+    pCF0++;
+  }
+}
+
+void _slapAddLastFrameDiffYUV420(IN_OUT void *pLastFrame, IN_OUT void *pData, const size_t resX, const size_t resY)
+{
+  __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
+  __m128i *pCurrentFrameYUV = (__m128i *)pData;
+
+  __m128i *pLF0 = (__m128i *)pLastFrameYUV;
+  __m128i *pCF0 = (__m128i *)pCurrentFrameYUV;
+
+  __m128i halfY = { 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129 };
+  __m128i halfUV = { 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130 };
+
+  size_t max = (resX * resY) >> 4;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i nb = _mm_sub_epi8(*pLF0, _mm_add_epi8(*pCF0, halfY));
+    _mm_store_si128(pLF0, nb);
+    _mm_store_si128(pCF0, nb);
+
+    pLF0++;
+    pCF0++;
+  }
+
+  max >>= 1;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i nb = _mm_sub_epi8(*pLF0, _mm_add_epi8(*pCF0, halfUV));
+    _mm_store_si128(pLF0, nb);
+    _mm_store_si128(pCF0, nb);
+
+    pLF0++;
+    pCF0++;
+  }
+}
+
+void _slapGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, OUT void *pLowResData, const size_t resX, const size_t resY)
+{
+  uint8_t *pMainFrameY = (uint8_t *)pData;
+  uint16_t *pSubFrameYUV = (uint16_t *)pLowResData;
+
+  size_t resXdiv16 = resX >> 4;
+  size_t sevenTimesResXDiv16 = resXdiv16 * 7;
+
+  __m128i *pCB0 = (__m128i *)pMainFrameY;
+  __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
+  __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
+  __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
+  __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
+  __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
+  __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
+  __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
+
+  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (resY >> 1);
+  __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
+  __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
+  __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
+  __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
+  __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
+  __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
+  __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
+
+  __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+
+  for (size_t y = 0; y < (resY >> 1); y += 8)
+  {
+    for (size_t x = 0; x < resX; x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+
+      __m128i v = _mm_srli_si128(*pCB0, 7);
+      *pSubFrameYUV = *(uint16_t *)&v;
+
+      pSubFrameYUV++;
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16;
+    pCB1 += sevenTimesResXDiv16;
+    pCB2 += sevenTimesResXDiv16;
+    pCB3 += sevenTimesResXDiv16;
+    pCB4 += sevenTimesResXDiv16;
+    pCB5 += sevenTimesResXDiv16;
+    pCB6 += sevenTimesResXDiv16;
+    pCB7 += sevenTimesResXDiv16;
+    pCB0_ += sevenTimesResXDiv16;
+    pCB1_ += sevenTimesResXDiv16;
+    pCB2_ += sevenTimesResXDiv16;
+    pCB3_ += sevenTimesResXDiv16;
+    pCB4_ += sevenTimesResXDiv16;
+    pCB5_ += sevenTimesResXDiv16;
+    pCB6_ += sevenTimesResXDiv16;
+    pCB7_ += sevenTimesResXDiv16;
+  }
+
+  size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
+  size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
+  size_t resXdiv16Half = resXdiv16 >> 1;
+
+  int first = 1;
+chromaSubSampleBuffer:
+
+  pCB0 = pCB0_;
+  pCB1 = pCB0 + resXdiv16Half;
+  pCB2 = pCB1 + resXdiv16Half;
+  pCB3 = pCB2 + resXdiv16Half;
+  pCB4 = pCB3 + resXdiv16Half;
+  pCB5 = pCB4 + resXdiv16Half;
+  pCB6 = pCB5 + resXdiv16Half;
+  pCB7 = pCB6 + resXdiv16Half;
+  pCB0_ += halfFrameDiv16Quarter;
+  pCB1_ = pCB0_ + resXdiv16Half;
+  pCB2_ = pCB1_ + resXdiv16Half;
+  pCB3_ = pCB2_ + resXdiv16Half;
+  pCB4_ = pCB3_ + resXdiv16Half;
+  pCB5_ = pCB4_ + resXdiv16Half;
+  pCB6_ = pCB5_ + resXdiv16Half;
+  pCB7_ = pCB6_ + resXdiv16Half;
+
+  for (size_t y = 0; y < (resY >> 2); y += 8)
+  {
+    for (size_t x = 0; x < (resX >> 1); x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, *pCB0), half);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, *pCB1), half);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, *pCB2), half);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, *pCB3), half);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, *pCB4), half);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, *pCB5), half);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, *pCB6), half);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, *pCB7), half);
+
+      __m128i v = _mm_srli_si128(*pCB0, 7);
+      *pSubFrameYUV = *(uint16_t *)&v;
+
+      pSubFrameYUV++;
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16Half;
+    pCB1 += sevenTimesResXDiv16Half;
+    pCB2 += sevenTimesResXDiv16Half;
+    pCB3 += sevenTimesResXDiv16Half;
+    pCB4 += sevenTimesResXDiv16Half;
+    pCB5 += sevenTimesResXDiv16Half;
+    pCB6 += sevenTimesResXDiv16Half;
+    pCB7 += sevenTimesResXDiv16Half;
+    pCB0_ += sevenTimesResXDiv16Half;
+    pCB1_ += sevenTimesResXDiv16Half;
+    pCB2_ += sevenTimesResXDiv16Half;
+    pCB3_ += sevenTimesResXDiv16Half;
+    pCB4_ += sevenTimesResXDiv16Half;
+    pCB5_ += sevenTimesResXDiv16Half;
+    pCB6_ += sevenTimesResXDiv16Half;
+    pCB7_ += sevenTimesResXDiv16Half;
+  }
+
+  if (first)
+  {
+    first = 0;
+    goto chromaSubSampleBuffer;
+  }
+}
+
+void _slapAddStereoDiffYUV420(IN_OUT void *pData, const size_t resX, const size_t resY)
+{
+  uint8_t *pMainFrameY = (uint8_t *)pData;
+
+  size_t resXdiv16 = resX >> 4;
+  size_t sevenTimesResXDiv16 = resXdiv16 * 7;
+
+  __m128i *pCB0 = (__m128i *)pMainFrameY;
+  __m128i *pCB1 = (__m128i *)pCB0 + resXdiv16;
+  __m128i *pCB2 = (__m128i *)pCB1 + resXdiv16;
+  __m128i *pCB3 = (__m128i *)pCB2 + resXdiv16;
+  __m128i *pCB4 = (__m128i *)pCB3 + resXdiv16;
+  __m128i *pCB5 = (__m128i *)pCB4 + resXdiv16;
+  __m128i *pCB6 = (__m128i *)pCB5 + resXdiv16;
+  __m128i *pCB7 = (__m128i *)pCB6 + resXdiv16;
+
+  __m128i *pCB0_ = (__m128i *)pMainFrameY + resXdiv16 * (resY >> 1);
+  __m128i *pCB1_ = (__m128i *)pCB0_ + resXdiv16;
+  __m128i *pCB2_ = (__m128i *)pCB1_ + resXdiv16;
+  __m128i *pCB3_ = (__m128i *)pCB2_ + resXdiv16;
+  __m128i *pCB4_ = (__m128i *)pCB3_ + resXdiv16;
+  __m128i *pCB5_ = (__m128i *)pCB4_ + resXdiv16;
+  __m128i *pCB6_ = (__m128i *)pCB5_ + resXdiv16;
+  __m128i *pCB7_ = (__m128i *)pCB6_ + resXdiv16;
+
+  __m128i halfY = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+  __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+
+  for (size_t y = 0; y < (resY >> 1); y += 8)
+  {
+    for (size_t x = 0; x < resX; x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfY), *pCB0);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfY), *pCB1);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfY), *pCB2);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfY), *pCB3);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfY), *pCB4);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfY), *pCB5);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfY), *pCB6);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfY), *pCB7);
+
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16;
+    pCB1 += sevenTimesResXDiv16;
+    pCB2 += sevenTimesResXDiv16;
+    pCB3 += sevenTimesResXDiv16;
+    pCB4 += sevenTimesResXDiv16;
+    pCB5 += sevenTimesResXDiv16;
+    pCB6 += sevenTimesResXDiv16;
+    pCB7 += sevenTimesResXDiv16;
+    pCB0_ += sevenTimesResXDiv16;
+    pCB1_ += sevenTimesResXDiv16;
+    pCB2_ += sevenTimesResXDiv16;
+    pCB3_ += sevenTimesResXDiv16;
+    pCB4_ += sevenTimesResXDiv16;
+    pCB5_ += sevenTimesResXDiv16;
+    pCB6_ += sevenTimesResXDiv16;
+    pCB7_ += sevenTimesResXDiv16;
+  }
+
+  size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
+  size_t sevenTimesResXDiv16Half = sevenTimesResXDiv16 >> 1;
+  size_t resXdiv16Half = resXdiv16 >> 1;
+
+  int first = 1;
+chromaSubSampleBuffer:
+
+  pCB0 = pCB0_;
+  pCB1 = pCB0 + resXdiv16Half;
+  pCB2 = pCB1 + resXdiv16Half;
+  pCB3 = pCB2 + resXdiv16Half;
+  pCB4 = pCB3 + resXdiv16Half;
+  pCB5 = pCB4 + resXdiv16Half;
+  pCB6 = pCB5 + resXdiv16Half;
+  pCB7 = pCB6 + resXdiv16Half;
+  pCB0_ += halfFrameDiv16Quarter;
+  pCB1_ = pCB0_ + resXdiv16Half;
+  pCB2_ = pCB1_ + resXdiv16Half;
+  pCB3_ = pCB2_ + resXdiv16Half;
+  pCB4_ = pCB3_ + resXdiv16Half;
+  pCB5_ = pCB4_ + resXdiv16Half;
+  pCB6_ = pCB5_ + resXdiv16Half;
+  pCB7_ = pCB6_ + resXdiv16Half;
+
+  for (size_t y = 0; y < (resY >> 2); y += 8)
+  {
+    for (size_t x = 0; x < (resX >> 1); x += 16)
+    {
+      *pCB0_ = _mm_add_epi8(_mm_sub_epi8(*pCB0_, halfUV), *pCB0);
+      *pCB1_ = _mm_add_epi8(_mm_sub_epi8(*pCB1_, halfUV), *pCB1);
+      *pCB2_ = _mm_add_epi8(_mm_sub_epi8(*pCB2_, halfUV), *pCB2);
+      *pCB3_ = _mm_add_epi8(_mm_sub_epi8(*pCB3_, halfUV), *pCB3);
+      *pCB4_ = _mm_add_epi8(_mm_sub_epi8(*pCB4_, halfUV), *pCB4);
+      *pCB5_ = _mm_add_epi8(_mm_sub_epi8(*pCB5_, halfUV), *pCB5);
+      *pCB6_ = _mm_add_epi8(_mm_sub_epi8(*pCB6_, halfUV), *pCB6);
+      *pCB7_ = _mm_add_epi8(_mm_sub_epi8(*pCB7_, halfUV), *pCB7);
+
+      pCB0++;
+      pCB1++;
+      pCB2++;
+      pCB3++;
+      pCB4++;
+      pCB5++;
+      pCB6++;
+      pCB7++;
+      pCB0_++;
+      pCB1_++;
+      pCB2_++;
+      pCB3_++;
+      pCB4_++;
+      pCB5_++;
+      pCB6_++;
+      pCB7_++;
+    }
+
+    pCB0 += sevenTimesResXDiv16Half;
+    pCB1 += sevenTimesResXDiv16Half;
+    pCB2 += sevenTimesResXDiv16Half;
+    pCB3 += sevenTimesResXDiv16Half;
+    pCB4 += sevenTimesResXDiv16Half;
+    pCB5 += sevenTimesResXDiv16Half;
+    pCB6 += sevenTimesResXDiv16Half;
+    pCB7 += sevenTimesResXDiv16Half;
+    pCB0_ += sevenTimesResXDiv16Half;
+    pCB1_ += sevenTimesResXDiv16Half;
+    pCB2_ += sevenTimesResXDiv16Half;
+    pCB3_ += sevenTimesResXDiv16Half;
+    pCB4_ += sevenTimesResXDiv16Half;
+    pCB5_ += sevenTimesResXDiv16Half;
+    pCB6_ += sevenTimesResXDiv16Half;
+    pCB7_ += sevenTimesResXDiv16Half;
+  }
+
+  if (first)
+  {
+    first = 0;
+    goto chromaSubSampleBuffer;
+  }
+}
+
+void _slapAddStereoDiffYUV420AndCopyToLastFrame(IN_OUT void * pData, OUT void * pLastFrame, const size_t resX, const size_t resY)
+{
+  size_t max = (resY * resX) >> 5;
+
+  __m128i *pCB0 = (__m128i *)pData;
+  __m128i *pCB0_ = (__m128i *)pData + max;
+  __m128i *pLF0 = (__m128i *)pLastFrame;
+  __m128i *pLF0_ = (__m128i *)pLastFrame + max;
+
+  __m128i halfYUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    _mm_store_si128(pLF0, cb0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
+
+  max >>= 2;
+  pCB0 = pCB0_;
+  pLF0 = pLF0_;
+  pCB0_ += max;
+  pLF0_ += max;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    _mm_store_si128(pLF0, cb0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
+
+  pCB0 = pCB0_;
+  pLF0 = pLF0_;
+  pCB0_ += max;
+  pLF0_ += max;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    _mm_store_si128(pLF0, cb0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
+}
+
+void _slapAddStereoDiffYUV420AndAddLastFrameDiff(IN_OUT void * pData, OUT void * pLastFrame, const size_t resX, const size_t resY)
+{
+  size_t max = (resY * resX) >> 5;
+
+  __m128i *pCB0 = (__m128i *)pData;
+  __m128i *pCB0_ = (__m128i *)pData + max;
+  __m128i *pLF0 = (__m128i *)pLastFrame;
+  __m128i *pLF0_ = (__m128i *)pLastFrame + max;
+
+  __m128i halfYUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+  __m128i halfY = { 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129, 129 };
+  __m128i halfUV = { 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130 };
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    __m128i lf0 = _mm_load_si128(pLF0);
+
+    lf0 = _mm_sub_epi8(lf0, _mm_add_epi8(cb0, halfY));
+    _mm_store_si128(pCB0, lf0);
+    _mm_store_si128(pLF0, lf0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    __m128i lf0_ = _mm_load_si128(pLF0_);
+
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+    cb0_ = _mm_sub_epi8(lf0_, _mm_add_epi8(cb0_, halfY));
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
+
+  max >>= 2;
+  pCB0 = pCB0_;
+  pLF0 = pLF0_;
+  pCB0_ += max;
+  pLF0_ += max;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    __m128i lf0 = _mm_load_si128(pLF0);
+
+    lf0 = _mm_sub_epi8(lf0, _mm_add_epi8(cb0, halfUV));
+    _mm_store_si128(pCB0, lf0);
+    _mm_store_si128(pLF0, lf0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    __m128i lf0_ = _mm_load_si128(pLF0_);
+
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+    cb0_ = _mm_sub_epi8(lf0_, _mm_add_epi8(cb0_, halfUV));
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
+
+  pCB0 = pCB0_;
+  pLF0 = pLF0_;
+  pCB0_ += max;
+  pLF0_ += max;
+
+  for (size_t i = 0; i < max; i++)
+  {
+    __m128i cb0 = _mm_load_si128(pCB0);
+    __m128i lf0 = _mm_load_si128(pLF0);
+
+    lf0 = _mm_sub_epi8(lf0, _mm_add_epi8(cb0, halfUV));
+    _mm_store_si128(pCB0, lf0);
+    _mm_store_si128(pLF0, lf0);
+
+    __m128i cb0_ = _mm_load_si128(pCB0_);
+    __m128i lf0_ = _mm_load_si128(pLF0_);
+
+    cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, halfYUV), cb0);
+    cb0_ = _mm_sub_epi8(lf0_, _mm_add_epi8(cb0_, halfUV));
+
+    _mm_store_si128(pCB0_, cb0_);
+    _mm_store_si128(pLF0_, cb0_);
+
+    pCB0++;
+    pCB0_++;
+    pLF0++;
+    pLF0_++;
+  }
 }

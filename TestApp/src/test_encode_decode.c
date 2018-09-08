@@ -103,7 +103,7 @@ int main(int argc, char **argv)
 
   before = clock();
 
-#define SAVE_AS_JPEG 1
+//#define SAVE_AS_JPEG 1
 
   do
   {
