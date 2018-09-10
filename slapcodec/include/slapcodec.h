@@ -60,6 +60,8 @@ extern "C" {
 
   slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY);
 
+#define SLAP_SUB_BUFFER_COUNT 1
+
 #define SLAP_FLAG_STEREO 1
 
   typedef union mode
@@ -82,16 +84,21 @@ extern "C" {
     size_t resY;
     uint8_t *pLowResData;
     uint8_t *pLastFrame;
+    size_t encodingThreads;
+    size_t lowResX;
+    size_t lowResY;
 
     mode mode;
 
     int quality;
-    void *pEncoderInternal;
-    void *pDecoderInternal;
-    unsigned long __data0;
+    int iframeQuality;
+    int lowResQuality;
+    void **ppEncoderInternal;
+    void **ppDecoderInternal;
+    unsigned long compressedSubBufferSize[SLAP_SUB_BUFFER_COUNT];
   } slapEncoder;
 
-  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
+  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags, const size_t encodingThreadCount);
   void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder);
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
@@ -109,8 +116,8 @@ extern "C" {
 #define SLAP_PRE_HEADER_IFRAME_STEP_INDEX 4
 #define SLAP_PRE_HEADER_CODEC_FLAGS_INDEX 5
 
-#define SLAP_HEADER_PER_FRAME_SIZE 2 /*will soon be 8*/
-#define SLAP_SUB_BUFFER_COUNT 6
+#define SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET 2
+#define SLAP_HEADER_PER_FRAME_SIZE (SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + SLAP_SUB_BUFFER_COUNT * 2)
 
 #define SLAP_HEADER_FRAME_OFFSET_INDEX 0
 #define SLAP_HEADER_FRAME_DATA_SIZE_INDEX 1
@@ -126,6 +133,8 @@ extern "C" {
     uint64_t frameSizeOffsets[SLAP_HEADER_BLOCK_SIZE];
     size_t frameSizeOffsetIndex;
     char *filename;
+    void *pLowResBuffer;
+    size_t lowResBufferSize;
   } slapFileWriter;
 
   slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, const size_t sizeY, const uint64_t flags);
