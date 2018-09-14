@@ -94,6 +94,7 @@ extern "C" {
     int iframeQuality;
     int lowResQuality;
     void **ppEncoderInternal;
+    void **ppLowResEncoderInternal;
     void **ppDecoderInternal;
     unsigned long compressedSubBufferSize[SLAP_SUB_BUFFER_COUNT];
   } slapEncoder;

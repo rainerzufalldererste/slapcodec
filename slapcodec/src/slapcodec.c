@@ -156,7 +156,7 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
       goto epilogue;
   }
 
-#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+  pEncoder->ppLowResEncoderInternal = tjInitCompress();
 
   pEncoder->ppDecoderInternal = slapAlloc(void *, pEncoder->encodingThreads);
 
@@ -172,7 +172,6 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
     if (!pEncoder->ppDecoderInternal[i])
       goto epilogue;
   }
-#endif
 
   return pEncoder;
 
@@ -189,7 +188,9 @@ epilogue:
     slapFreePtr(&pEncoder->ppEncoderInternal);
   }
 
-#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+  if (pEncoder->ppLowResEncoderInternal)
+    tjDestroy(pEncoder->ppLowResEncoderInternal);
+
   if (pEncoder->ppDecoderInternal)
   {
     for (size_t i = 0; i < pEncoder->encodingThreads; i++)
@@ -198,7 +199,6 @@ epilogue:
 
     slapFreePtr(&pEncoder->ppDecoderInternal);
   }
-#endif
 
   if ((pEncoder)->pLastFrame)
     slapFreePtr(&(pEncoder)->pLastFrame);
@@ -221,7 +221,9 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
       slapFreePtr(&(*ppEncoder)->ppEncoderInternal);
     }
 
-#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
+    if ((*ppEncoder)->ppLowResEncoderInternal)
+      tjDestroy((*ppEncoder)->ppLowResEncoderInternal);
+
     if ((*ppEncoder)->ppDecoderInternal)
     {
       for (size_t i = 0; i < (*ppEncoder)->encodingThreads; i++)
@@ -230,7 +232,6 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
 
       slapFreePtr(&(*ppEncoder)->ppDecoderInternal);
     }
-#endif
 
     if ((*ppEncoder)->pLowResData)
       slapFreePtr(&(*ppEncoder)->pLowResData);
@@ -263,8 +264,8 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
   {
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
     {
-      /*_slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(pEncoder->pLastFrame, pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);//*/_slapLastFrameDiffYUV420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
-      _slapGenSubBufferAndStereoDiffYUV420(pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);
+      _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(pEncoder->pLastFrame, pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);//*/_slapLastFrameDiffYUV420(pEncoder->pLastFrame, pData, pEncoder->resX, pEncoder->resY);
+      //_slapGenSubBufferAndStereoDiffYUV420(pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);
     }
     else
     {
@@ -281,7 +282,6 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
 
     *pSize = pEncoder->compressedSubBufferSize[0];
 
-#ifdef SLAP_ENCODER_DECODED_IFRAME_DIFF
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
     {
       if (tjDecompressToYUV2(pEncoder->ppDecoderInternal[0], *ppCompressedData, pEncoder->compressedSubBufferSize[0], pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJFLAG_FASTDCT))
@@ -306,7 +306,6 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
 
       _slapAddStereoDiffYUV420(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
     }
-#endif
   }
 
   pEncoder->frameIndex++;
@@ -424,6 +423,9 @@ void slapDestroyFileWriter(IN_OUT slapFileWriter **ppFileWriter)
 
     if ((*ppFileWriter)->pData)
       tjFree((*ppFileWriter)->pData);
+
+    if ((*ppFileWriter)->pLowResBuffer)
+      tjFree((*ppFileWriter)->pLowResBuffer);
 
     if ((*ppFileWriter)->filename)
       free((*ppFileWriter)->filename);
@@ -548,21 +550,28 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   if (result != slapSuccess)
     goto epilogue;
 
-  result = _slapCompressYUV420(pFileWriter->pEncoder->pLowResData, &pFileWriter->pLowResBuffer, &pFileWriter->lowResBufferSize, pFileWriter->pEncoder->lowResX, pFileWriter->pEncoder->lowResY, pFileWriter->pEncoder->lowResQuality, pFileWriter->pEncoder->ppEncoderInternal[0]);
+  result = _slapCompressYUV420(pFileWriter->pEncoder->pLowResData, &pFileWriter->pLowResBuffer, &pFileWriter->lowResBufferSize, pFileWriter->pEncoder->lowResX, pFileWriter->pEncoder->lowResY, pFileWriter->pEncoder->lowResQuality, pFileWriter->pEncoder->ppLowResEncoderInternal);
 
   if (result != slapSuccess)
     goto epilogue;
 
   filePosition = ftell(pFileWriter->pMainFile);
 
-  if (pFileWriter->lowResBufferSize != fwrite(pFileWriter->pData, 1, pFileWriter->lowResBufferSize, pFileWriter->pMainFile))
+  if (pFileWriter->lowResBufferSize != fwrite(pFileWriter->pLowResBuffer, 1, pFileWriter->lowResBufferSize, pFileWriter->pMainFile))
   {
     result = slapError_FileError;
     goto epilogue;
   }
 
   result = _slapWriteToHeader(pFileWriter, filePosition);
+
+  if (result != slapSuccess)
+    goto epilogue;
+
   result = _slapWriteToHeader(pFileWriter, pFileWriter->lowResBufferSize);
+
+  if (result != slapSuccess)
+    goto epilogue;
 
   filePosition = ftell(pFileWriter->pMainFile);
 
@@ -574,6 +583,10 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   pFileWriter->frameCount++;
   result = _slapWriteToHeader(pFileWriter, filePosition);
+
+  if (result != slapSuccess)
+    goto epilogue;
+
   result = _slapWriteToHeader(pFileWriter, dataSize);
 
   if (result != slapSuccess)
@@ -634,6 +647,7 @@ epilogue:
     slapFreePtr(&pDecoder->pLastFrame);
 
   slapFreePtr(&pDecoder);
+
   return NULL;
 }
 
@@ -906,9 +920,7 @@ void _slapLastFrameDiffYUV420(IN_OUT void *pLastFrame, IN_OUT void *pData, const
     __m128i lf0 = _mm_load_si128(pLF0);
     __m128i cf0 = _mm_load_si128(pCF0);
     __m128i nb = _mm_add_epi8(_mm_sub_epi8(lf0, cf0), half);
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-    _mm_store_si128(pLF0, cf0);
-#endif
+
     _mm_store_si128(pCF0, nb);
 
     pLF0++;
@@ -938,94 +950,42 @@ void _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(IN_OUT void *pLastFrame, 
 
   __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
 
+  size_t itX = resX >> 5;
+  const size_t stepSize = 2;
+
   for (size_t y = 0; y < (resY >> 1); y += 8)
   {
-    for (size_t x = 0; x < resX; x += 32)
+    for (size_t x = 0; x < itX; x++)
     {
       __m128i cb0 = _mm_load_si128(pCB0);
+      __m128i cb1 = _mm_load_si128(pCB1);
       __m128i cb0_ = _mm_load_si128(pCB0_);
-      __m128i lf0 = _mm_load_si128(pLF0);
-      __m128i lf0_ = _mm_load_si128(pLF0_);
+      __m128i cb1_ = _mm_load_si128(pCB1_);
 
       // SubBuffer
       {
         __m128i v = _mm_srli_si128(cb0, 7);
         *pSubFrameYUV = *(uint16_t *)&v;
+        pSubFrameYUV++;
+
+        v = _mm_srli_si128(cb1, 7);
+        *pSubFrameYUV = *(uint16_t *)&v;
+        pSubFrameYUV++;
       }
 
-      __m128i cb1, cb1_, lf1, lf1_;
-
-      cb1 = _mm_load_si128(pCB1);
-      cb1_ = _mm_load_si128(pCB1_);
-      lf1 = _mm_load_si128(pLF1);
-      lf1_ = _mm_load_si128(pLF1_);
-
-      // last frame diff
-      cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
-      cb0_ = _mm_add_epi8(_mm_sub_epi8(lf0_, cb0_), half);
-      cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
-      cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
-
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-      _mm_store_si128(pLF0, cb0);
-      _mm_store_si128(pLF0_, cb0_);
-      _mm_store_si128(pLF1, cb1);
-      _mm_store_si128(pLF1_, cb1_);
-#endif
-      _mm_store_si128(pCB0_, cb0);
-      _mm_store_si128(pCB1_, cb1);
-
-      // Stereo diff
-      cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
-      cb1_ = _mm_add_epi8(_mm_sub_epi8(cb1_, cb1), half);
-      _mm_store_si128(pCB0_, cb0_);
-      _mm_store_si128(pCB1_, cb1_);
-
-      pSubFrameYUV++;
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
-    }
-
-    for (size_t k = 0; k < 7; k++)
-    {
-      __m128i cb0 = _mm_load_si128(pCB0);
-      __m128i cb0_ = _mm_load_si128(pCB0_);
       __m128i lf0 = _mm_load_si128(pLF0);
-      __m128i lf0_ = _mm_load_si128(pLF0_);
-      __m128i cb1 = _mm_load_si128(pCB1);
-      __m128i cb1_ = _mm_load_si128(pCB1_);
       __m128i lf1 = _mm_load_si128(pLF1);
+      __m128i lf0_ = _mm_load_si128(pLF0_);
       __m128i lf1_ = _mm_load_si128(pLF1_);
 
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
-
       // last frame diff
       cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
       cb0_ = _mm_add_epi8(_mm_sub_epi8(lf0_, cb0_), half);
       cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
       cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
 
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-      _mm_store_si128(pLF0, cb0);
-      _mm_store_si128(pLF0_, cb0_);
-      _mm_store_si128(pLF1, cb1);
-      _mm_store_si128(pLF1_, cb1_);
-#endif
-      _mm_store_si128(pCB0_, cb0);
-      _mm_store_si128(pCB1_, cb1);
+      _mm_store_si128(pCB0, cb0);
+      _mm_store_si128(pCB1, cb1);
 
       // Stereo diff
       cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
@@ -1033,50 +993,96 @@ void _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(IN_OUT void *pLastFrame, 
       _mm_store_si128(pCB0_, cb0_);
       _mm_store_si128(pCB1_, cb1_);
 
-      pSubFrameYUV++;
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
+      pCB0 += stepSize;
+      pCB1 += stepSize;
+      pCB0_ += stepSize;
+      pCB1_ += stepSize;
+      pLF0 += stepSize;
+      pLF1 += stepSize;
+      pLF0_ += stepSize;
+      pLF1_ += stepSize;
+    }
+
+    
+    for (size_t k = 0; k < 7; k++)
+    {
+      for (size_t x = 0; x < itX; x++)
+      {
+        __m128i cb0 = _mm_load_si128(pCB0);
+        __m128i cb1 = _mm_load_si128(pCB1);
+        __m128i cb0_ = _mm_load_si128(pCB0_);
+        __m128i cb1_ = _mm_load_si128(pCB1_);
+        __m128i lf0 = _mm_load_si128(pLF0);
+        __m128i lf1 = _mm_load_si128(pLF1);
+        __m128i lf0_ = _mm_load_si128(pLF0_);
+        __m128i lf1_ = _mm_load_si128(pLF1_);
+
+        // last frame diff
+        cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
+        cb0_ = _mm_add_epi8(_mm_sub_epi8(lf0_, cb0_), half);
+        cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
+        cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
+
+        _mm_store_si128(pCB0, cb0);
+        _mm_store_si128(pCB1, cb1);
+
+        // Stereo diff
+        cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
+        cb1_ = _mm_add_epi8(_mm_sub_epi8(cb1_, cb1), half);
+        _mm_store_si128(pCB0_, cb0_);
+        _mm_store_si128(pCB1_, cb1_);
+
+        pCB0 += stepSize;
+        pCB1 += stepSize;
+        pCB0_ += stepSize;
+        pCB1_ += stepSize;
+        pLF0 += stepSize;
+        pLF1 += stepSize;
+        pLF0_ += stepSize;
+        pLF1_ += stepSize;
+      }
     }
   }
 
   size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
-  size_t resXdiv16Half = resXdiv16 >> 1;
+  itX >>= 1;
 
   int first = 1;
 chromaSubSampleBuffer:
 
   pCB0 = pCB0_;
-  pCB1 = pCB0 + resXdiv16Half;
+  pCB1 = pCB0 + 1;
   pCB0_ += halfFrameDiv16Quarter;
-  pCB1_ = pCB0_ + resXdiv16Half;
+  pCB1_ = pCB0_ + 1;
+  pLF0 = pLF0_;
+  pLF1 = pLF0 + 1;
+  pLF0_ += halfFrameDiv16Quarter;
+  pLF1_ = pLF0_ + 1;
 
   for (size_t y = 0; y < (resY >> 2); y += 8)
   {
-    for (size_t x = 0; x < resX; x += 32)
+    for (size_t x = 0; x < itX; x++)
     {
       __m128i cb0 = _mm_load_si128(pCB0);
+      __m128i cb1 = _mm_load_si128(pCB1);
       __m128i cb0_ = _mm_load_si128(pCB0_);
-      __m128i lf0 = _mm_load_si128(pLF0);
-      __m128i lf0_ = _mm_load_si128(pLF0_);
+      __m128i cb1_ = _mm_load_si128(pCB1_);
 
       // SubBuffer
       {
         __m128i v = _mm_srli_si128(cb0, 7);
         *pSubFrameYUV = *(uint16_t *)&v;
+        pSubFrameYUV++;
+
+        v = _mm_srli_si128(cb1, 7);
+        *pSubFrameYUV = *(uint16_t *)&v;
+        pSubFrameYUV++;
       }
 
-      __m128i cb1, cb1_, lf1, lf1_;
-
-      cb1 = _mm_load_si128(pCB1);
-      cb1_ = _mm_load_si128(pCB1_);
-      lf1 = _mm_load_si128(pLF1);
-      lf1_ = _mm_load_si128(pLF1_);
+      __m128i lf0 = _mm_load_si128(pLF0);
+      __m128i lf1 = _mm_load_si128(pLF1);
+      __m128i lf0_ = _mm_load_si128(pLF0_);
+      __m128i lf1_ = _mm_load_si128(pLF1_);
 
       // last frame diff
       cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
@@ -1084,14 +1090,8 @@ chromaSubSampleBuffer:
       cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
       cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
 
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-      _mm_store_si128(pLF0, cb0);
-      _mm_store_si128(pLF0_, cb0_);
-      _mm_store_si128(pLF1, cb1);
-      _mm_store_si128(pLF1_, cb1_);
-#endif
-      _mm_store_si128(pCB0_, cb0);
-      _mm_store_si128(pCB1_, cb1);
+      _mm_store_si128(pCB0, cb0);
+      _mm_store_si128(pCB1, cb1);
 
       // Stereo diff
       cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
@@ -1099,67 +1099,53 @@ chromaSubSampleBuffer:
       _mm_store_si128(pCB0_, cb0_);
       _mm_store_si128(pCB1_, cb1_);
 
-      pSubFrameYUV++;
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
+      pCB0 += stepSize;
+      pCB1 += stepSize;
+      pCB0_ += stepSize;
+      pCB1_ += stepSize;
+      pLF0 += stepSize;
+      pLF1 += stepSize;
+      pLF0_ += stepSize;
+      pLF1_ += stepSize;
     }
 
     for (size_t k = 0; k < 7; k++)
     {
-      __m128i cb0 = _mm_load_si128(pCB0);
-      __m128i cb0_ = _mm_load_si128(pCB0_);
-      __m128i lf0 = _mm_load_si128(pLF0);
-      __m128i lf0_ = _mm_load_si128(pLF0_);
-      __m128i cb1 = _mm_load_si128(pCB1);
-      __m128i cb1_ = _mm_load_si128(pCB1_);
-      __m128i lf1 = _mm_load_si128(pLF1);
-      __m128i lf1_ = _mm_load_si128(pLF1_);
+      for (size_t x = 0; x < itX; x++)
+      {
+        __m128i cb0 = _mm_load_si128(pCB0);
+        __m128i cb1 = _mm_load_si128(pCB1);
+        __m128i cb0_ = _mm_load_si128(pCB0_);
+        __m128i cb1_ = _mm_load_si128(pCB1_);
+        __m128i lf0 = _mm_load_si128(pLF0);
+        __m128i lf1 = _mm_load_si128(pLF1);
+        __m128i lf0_ = _mm_load_si128(pLF0_);
+        __m128i lf1_ = _mm_load_si128(pLF1_);
 
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
+        // last frame diff
+        cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
+        cb0_ = _mm_add_epi8(_mm_sub_epi8(lf0_, cb0_), half);
+        cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
+        cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
 
-      // last frame diff
-      cb0 = _mm_add_epi8(_mm_sub_epi8(lf0, cb0), half);
-      cb0_ = _mm_add_epi8(_mm_sub_epi8(lf0_, cb0_), half);
-      cb1 = _mm_add_epi8(_mm_sub_epi8(lf1, cb1), half);
-      cb1_ = _mm_add_epi8(_mm_sub_epi8(lf1_, cb1_), half);
+        _mm_store_si128(pCB0, cb0);
+        _mm_store_si128(pCB1, cb1);
 
-#ifndef SLAP_ENCODER_DECODED_IFRAME_DIFF
-      _mm_store_si128(pLF0, cb0);
-      _mm_store_si128(pLF0_, cb0_);
-      _mm_store_si128(pLF1, cb1);
-      _mm_store_si128(pLF1_, cb1_);
-#endif
-      _mm_store_si128(pCB0_, cb0);
-      _mm_store_si128(pCB1_, cb1);
+        // Stereo diff
+        cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
+        cb1_ = _mm_add_epi8(_mm_sub_epi8(cb1_, cb1), half);
+        _mm_store_si128(pCB0_, cb0_);
+        _mm_store_si128(pCB1_, cb1_);
 
-      // Stereo diff
-      cb0_ = _mm_add_epi8(_mm_sub_epi8(cb0_, cb0), half);
-      cb1_ = _mm_add_epi8(_mm_sub_epi8(cb1_, cb1), half);
-      _mm_store_si128(pCB0_, cb0_);
-      _mm_store_si128(pCB1_, cb1_);
-
-      pSubFrameYUV++;
-      pCB0 += 2;
-      pCB1 += 2;
-      pCB0_ += 2;
-      pCB1_ += 2;
-      pLF0 += 2;
-      pLF1 += 2;
-      pLF0_ += 2;
-      pLF1_ += 2;
+        pCB0 += stepSize;
+        pCB1 += stepSize;
+        pCB0_ += stepSize;
+        pCB1_ += stepSize;
+        pLF0 += stepSize;
+        pLF1 += stepSize;
+        pLF0_ += stepSize;
+        pLF1_ += stepSize;
+      }
     }
   }
 
