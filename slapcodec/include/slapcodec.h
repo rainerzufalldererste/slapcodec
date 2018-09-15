@@ -87,7 +87,6 @@ extern "C" {
     size_t resY;
     uint8_t *pLowResData;
     uint8_t *pLastFrame;
-    size_t encodingThreads;
     size_t lowResX;
     size_t lowResY;
 
@@ -102,7 +101,7 @@ extern "C" {
     unsigned long compressedSubBufferSize[SLAP_SUB_BUFFER_COUNT];
   } slapEncoder;
 
-  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags, const size_t encodingThreadCount);
+  slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder);
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
@@ -157,7 +156,7 @@ extern "C" {
 
     mode mode;
 
-    void *pAdditionalData;
+    void **ppDecoders;
     uint8_t *pLowResData;
     uint8_t *pLastFrame;
   } slapDecoder;
@@ -165,14 +164,14 @@ extern "C" {
   slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder);
 
-  slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData);
+  slapResult slapDecodeFrameYUV(IN slapDecoder *pDecoder, const size_t decoderIndex, IN void *pData, const size_t length, IN_OUT void *pYUVData);
 
   typedef struct slapFileReader
   {
     FILE *pFile;
-    void *pCurrentFrame;
-    size_t currentFrameAllocatedSize;
-    size_t currentFrameSize;
+    void **ppCurrentFrame;
+    size_t *pCurrentFrameAllocatedSize;
+    size_t *pCurrentFrameSize;
 
     void *pDecodedFrameYUV;
 

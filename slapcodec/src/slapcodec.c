@@ -106,7 +106,7 @@ epilogue:
   return result;
 }
 
-slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags, const size_t encodingThreadCount)
+slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags)
 {
   if (sizeX & 31 || sizeY & 31) // must be multiple of 32.
     return NULL;
@@ -125,7 +125,6 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
   pEncoder->quality = 75;
   pEncoder->iframeQuality = 75;
   pEncoder->lowResQuality = 85;
-  pEncoder->encodingThreads = encodingThreadCount;
 
   pEncoder->lowResX = pEncoder->resX >> 3;
   pEncoder->lowResY = pEncoder->resY >> 3;
@@ -143,14 +142,14 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
   if (!pEncoder->pLastFrame)
     goto epilogue;
 
-  pEncoder->ppEncoderInternal = slapAlloc(void *, pEncoder->encodingThreads);
+  pEncoder->ppEncoderInternal = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT);
 
   if (!pEncoder->ppEncoderInternal)
     goto epilogue;
 
-  memset(pEncoder->ppEncoderInternal, 0, sizeof(void *) * pEncoder->encodingThreads);
+  memset(pEncoder->ppEncoderInternal, 0, sizeof(void *) * SLAP_SUB_BUFFER_COUNT);
 
-  for (size_t i = 0; i < pEncoder->encodingThreads; i++)
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
   {
     pEncoder->ppEncoderInternal[i] = tjInitCompress();
 
@@ -160,14 +159,14 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
 
   pEncoder->ppLowResEncoderInternal = tjInitCompress();
 
-  pEncoder->ppDecoderInternal = slapAlloc(void *, pEncoder->encodingThreads);
+  pEncoder->ppDecoderInternal = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT);
 
   if (!pEncoder->ppDecoderInternal)
     goto epilogue;
 
-  memset(pEncoder->ppDecoderInternal, 0, sizeof(void *) * pEncoder->encodingThreads);
+  memset(pEncoder->ppDecoderInternal, 0, sizeof(void *) * SLAP_SUB_BUFFER_COUNT);
 
-  for (size_t i = 0; i < pEncoder->encodingThreads; i++)
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
   {
     pEncoder->ppDecoderInternal[i] = tjInitDecompress();
 
@@ -183,7 +182,7 @@ epilogue:
 
   if (pEncoder->ppEncoderInternal)
   {
-    for (size_t i = 0; i < pEncoder->encodingThreads; i++)
+    for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
       if (pEncoder->ppEncoderInternal[i])
         tjDestroy(pEncoder->ppEncoderInternal[i]);
 
@@ -195,7 +194,7 @@ epilogue:
 
   if (pEncoder->ppDecoderInternal)
   {
-    for (size_t i = 0; i < pEncoder->encodingThreads; i++)
+    for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
       if (pEncoder->ppDecoderInternal[i])
         tjDestroy(pEncoder->ppDecoderInternal[i]);
 
@@ -216,7 +215,7 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
   {
     if ((*ppEncoder)->ppEncoderInternal)
     {
-      for (size_t i = 0; i < (*ppEncoder)->encodingThreads; i++)
+      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
         if ((*ppEncoder)->ppEncoderInternal[i])
           tjDestroy((*ppEncoder)->ppEncoderInternal[i]);
 
@@ -228,7 +227,7 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
 
     if ((*ppEncoder)->ppDecoderInternal)
     {
-      for (size_t i = 0; i < (*ppEncoder)->encodingThreads; i++)
+      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
         if ((*ppEncoder)->ppDecoderInternal[i])
           tjDestroy((*ppEncoder)->ppDecoderInternal[i]);
 
@@ -345,7 +344,7 @@ slapFileWriter * slapCreateFileWriter(const char *filename, const size_t sizeX, 
   if (!pFileWriter->filename)
     goto epilogue;
 
-  pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, flags, 1);
+  pFileWriter->pEncoder = slapCreateEncoder(sizeX, sizeY, flags);
 
   if (!pFileWriter->pEncoder)
     goto epilogue;
@@ -607,10 +606,20 @@ slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const ui
   pDecoder->iframeStep = 30;
   pDecoder->mode.flagsPack = flags;
 
-  pDecoder->pAdditionalData = tjInitDecompress();
-
-  if (!pDecoder->pAdditionalData)
+  pDecoder->ppDecoders = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT);
+  
+  if (!pDecoder->ppDecoders)
     goto epilogue;
+
+  memset(pDecoder->ppDecoders, 0, sizeof(void *) * SLAP_SUB_BUFFER_COUNT);
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    pDecoder->ppDecoders[i] = tjInitDecompress();
+
+    if (!pDecoder->ppDecoders[i])
+      goto epilogue;
+  }
 
   size_t lowResSizeX = sizeX >> 3;
   size_t lowResSizeY = sizeY >> 3;
@@ -631,8 +640,14 @@ slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const ui
   return pDecoder;
 
 epilogue:
-  if (pDecoder->pAdditionalData)
-    tjDestroy(pDecoder->pAdditionalData);
+  if (pDecoder->ppDecoders)
+  {
+    for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+      if (pDecoder->ppDecoders[i])
+        tjDestroy(pDecoder->ppDecoders[i]);
+
+    slapFreePtr(&pDecoder->ppDecoders);
+  }
 
   if (pDecoder->pLowResData)
     slapFreePtr(&pDecoder->pLowResData);
@@ -649,7 +664,14 @@ void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
 {
   if (ppDecoder && *ppDecoder)
   {
-    tjDestroy((*ppDecoder)->pAdditionalData);
+    if ((*ppDecoder)->ppDecoders)
+    {
+      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+        if ((*ppDecoder)->ppDecoders[i])
+          tjDestroy((*ppDecoder)->ppDecoders[i]);
+
+      slapFreePtr(&(*ppDecoder)->ppDecoders);
+    }
 
     if ((*ppDecoder)->pLowResData)
       slapFreePtr(&(*ppDecoder)->pLowResData);
@@ -661,7 +683,7 @@ void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
   slapFreePtr(ppDecoder);
 }
 
-slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData)
+slapResult slapDecodeFrameYUV(IN slapDecoder *pDecoder, const size_t decoderIndex, IN void *pData, const size_t length, IN_OUT void *pYUVData)
 {
   slapResult result = slapSuccess;
 
@@ -673,9 +695,9 @@ slapResult slapDecodeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_
 
   if (pDecoder->mode.flags.encoder == 0)
   {
-    if (tjDecompressToYUV2(pDecoder->pAdditionalData, (unsigned char *)pData, (unsigned long)length, (unsigned char *)pYUVData, (int)pDecoder->resX, 4, (int)pDecoder->resY, TJFLAG_FASTDCT))
+    if (tjDecompressToYUV2(pDecoder->ppDecoders[decoderIndex], (unsigned char *)pData, (unsigned long)length, (unsigned char *)pYUVData, (int)pDecoder->resX, 4, (int)pDecoder->resY, TJFLAG_FASTDCT))
     {
-      slapLog(tjGetErrorStr2(pDecoder->pAdditionalData));
+      slapLog(tjGetErrorStr2(pDecoder->ppDecoders[decoderIndex]));
       result = slapError_Compress_Internal;
       goto epilogue;
     }
@@ -732,12 +754,35 @@ slapFileReader * slapCreateFileReader(const char *filename)
   if (!pFileReader->pDecodedFrameYUV)
     goto epilogue;
 
+  pFileReader->ppCurrentFrame = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT);
+
+  if (!pFileReader->ppCurrentFrame)
+    goto epilogue;
+
+  memset(pFileReader->ppCurrentFrame, 0, sizeof(void *) * SLAP_SUB_BUFFER_COUNT);
+
+  pFileReader->pCurrentFrameSize = slapAlloc(size_t, SLAP_SUB_BUFFER_COUNT);
+
+  if (!pFileReader->pCurrentFrameSize)
+    goto epilogue;
+
+  memset(pFileReader->pCurrentFrameSize, 0, sizeof(size_t) * SLAP_SUB_BUFFER_COUNT);
+
+  pFileReader->pCurrentFrameAllocatedSize = slapAlloc(size_t, SLAP_SUB_BUFFER_COUNT);
+
+  if (!pFileReader->pCurrentFrameAllocatedSize)
+    goto epilogue;
+
+  memset(pFileReader->pCurrentFrameAllocatedSize, 0, sizeof(size_t) * SLAP_SUB_BUFFER_COUNT);
+
   return pFileReader;
 
 epilogue:
 
   slapFreePtr(&(pFileReader)->pHeader);
-  slapFreePtr(&(pFileReader)->pCurrentFrame);
+  slapFreePtr(&(pFileReader)->ppCurrentFrame);
+  slapFreePtr(&(pFileReader)->pCurrentFrameSize);
+  slapFreePtr(&(pFileReader)->pCurrentFrameAllocatedSize);
   slapFreePtr(&(pFileReader)->pDecodedFrameYUV);
 
   if (pFileReader->pFile)
@@ -756,7 +801,19 @@ void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader)
   if (ppFileReader && *ppFileReader)
   {
     slapFreePtr(&(*ppFileReader)->pHeader);
-    slapFreePtr(&(*ppFileReader)->pCurrentFrame);
+
+    if ((*ppFileReader)->ppCurrentFrame)
+    {
+      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+        if ((*ppFileReader)->ppCurrentFrame[i])
+          slapFreePtr(&(*ppFileReader)->ppCurrentFrame[i]);
+
+      slapFreePtr(&(*ppFileReader)->ppCurrentFrame);
+    }
+
+    slapFreePtr(&(*ppFileReader)->pCurrentFrameSize);
+    slapFreePtr(&(*ppFileReader)->pCurrentFrameAllocatedSize);
+
     slapFreePtr(&(*ppFileReader)->pDecodedFrameYUV);
     slapDestroyDecoder(&(*ppFileReader)->pDecoder);
     fclose((*ppFileReader)->pFile);
@@ -808,16 +865,16 @@ slapResult _slapFileReader_ReadNextFrameFull(IN slapFileReader *pFileReader)
   }
 
   position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + SLAP_HEADER_FRAME_OFFSET_INDEX] + pFileReader->headerOffset;
-  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
+  pFileReader->pCurrentFrameSize[0] = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
 
-  if (pFileReader->currentFrameAllocatedSize < pFileReader->currentFrameSize)
+  if (pFileReader->pCurrentFrameAllocatedSize[0] < pFileReader->pCurrentFrameSize[0])
   {
-    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, pFileReader->currentFrameSize);
-    pFileReader->currentFrameAllocatedSize = pFileReader->currentFrameSize;
+    slapRealloc(&pFileReader->ppCurrentFrame[0], uint8_t, pFileReader->pCurrentFrameSize[0]);
+    pFileReader->pCurrentFrameAllocatedSize[0] = pFileReader->pCurrentFrameSize[0];
 
-    if (!pFileReader->pCurrentFrame)
+    if (!pFileReader->ppCurrentFrame[0])
     {
-      pFileReader->currentFrameAllocatedSize = 0;
+      pFileReader->pCurrentFrameAllocatedSize = 0;
       result = slapError_MemoryAllocation;
       goto epilogue;
     }
@@ -829,7 +886,7 @@ slapResult _slapFileReader_ReadNextFrameFull(IN slapFileReader *pFileReader)
     goto epilogue;
   }
 
-  if (pFileReader->currentFrameSize != fread(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFileReader->pFile))
+  if (pFileReader->pCurrentFrameSize[0] != fread(pFileReader->ppCurrentFrame[0], 1, pFileReader->pCurrentFrameSize[0], pFileReader->pFile))
   {
     result = slapError_FileError;
     goto epilogue;
@@ -851,7 +908,7 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
     goto epilogue;
   }
 
-  result = slapDecodeFrame(pFileReader->pDecoder, pFileReader->pCurrentFrame, pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV);
+  result = slapDecodeFrameYUV(pFileReader->pDecoder, 0, pFileReader->ppCurrentFrame[0], pFileReader->pCurrentFrameSize[0], pFileReader->pDecodedFrameYUV);
 
   if (result != slapSuccess)
     goto epilogue;
@@ -878,16 +935,16 @@ slapResult _slapFileReader_ReadNextFrameLowRes(IN slapFileReader *pFileReader)
   }
 
   position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_OFFSET_INDEX] + pFileReader->headerOffset;
-  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
+  pFileReader->pCurrentFrameSize[0] = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
 
-  if (pFileReader->currentFrameAllocatedSize < pFileReader->currentFrameSize)
+  if (pFileReader->pCurrentFrameAllocatedSize[0] < pFileReader->pCurrentFrameSize[0])
   {
-    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, pFileReader->currentFrameSize);
-    pFileReader->currentFrameAllocatedSize = pFileReader->currentFrameSize;
+    slapRealloc(&pFileReader->ppCurrentFrame[0], uint8_t, pFileReader->pCurrentFrameSize[0]);
+    pFileReader->pCurrentFrameAllocatedSize[0] = pFileReader->pCurrentFrameSize[0];
 
-    if (!pFileReader->pCurrentFrame)
+    if (!pFileReader->ppCurrentFrame[0])
     {
-      pFileReader->currentFrameAllocatedSize = 0;
+      pFileReader->pCurrentFrameAllocatedSize[0] = 0;
       result = slapError_MemoryAllocation;
       goto epilogue;
     }
@@ -899,7 +956,7 @@ slapResult _slapFileReader_ReadNextFrameLowRes(IN slapFileReader *pFileReader)
     goto epilogue;
   }
 
-  if (pFileReader->currentFrameSize != fread(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFileReader->pFile))
+  if (pFileReader->pCurrentFrameSize[0] != fread(pFileReader->ppCurrentFrame[0], 1, pFileReader->pCurrentFrameSize[0], pFileReader->pFile))
   {
     result = slapError_FileError;
     goto epilogue;
@@ -926,9 +983,9 @@ slapResult _slapFileReader_DecodeCurrentFrameLowRes(IN slapFileReader *pFileRead
 
   if (pFileReader->pDecoder->mode.flags.encoder == 0)
   {
-    if (tjDecompressToYUV2(pFileReader->pDecoder->pAdditionalData, (unsigned char *)pFileReader->pCurrentFrame, (unsigned long)pFileReader->currentFrameSize, (unsigned char *)pFileReader->pDecodedFrameYUV, (int)resX, 4, (int)resY, TJFLAG_FASTDCT))
+    if (tjDecompressToYUV2(pFileReader->pDecoder->ppDecoders[0], (unsigned char *)pFileReader->ppCurrentFrame[0], (unsigned long)pFileReader->pCurrentFrameSize[0], (unsigned char *)pFileReader->pDecodedFrameYUV, (int)resX, 4, (int)resY, TJFLAG_FASTDCT))
     {
-      slapLog(tjGetErrorStr2(pFileReader->pDecoder->pAdditionalData));
+      slapLog(tjGetErrorStr2(pFileReader->pDecoder->ppDecoders[0]));
       result = slapError_Compress_Internal;
       goto epilogue;
     }
