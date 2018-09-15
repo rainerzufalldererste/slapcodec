@@ -68,7 +68,7 @@ int main(int argc, char **argv)
     printf("Creating File Writer...\n");
     slapFileWriter *pFileWriter = slapCreateFileWriter(slapFile, 7680, 7680, SLAP_FLAG_STEREO);
 
-    frameCount = 100;
+    frameCount = 10;
     printf("Adding %" PRIu64 " frames...\n", frameCount);
 
     pFrame = malloc(7680 * 11520);
@@ -106,11 +106,13 @@ int main(int argc, char **argv)
 
   before = clock();
 
-//#define SAVE_AS_JPEG 1
+#define SAVE_AS_JPEG 1
+#define DECODE_LOW_RES 1
 
   do
   {
-    result = _slapFileReader_ReadNextFrame(pFileReader);
+#if !DECODE_LOW_RES
+    result = _slapFileReader_ReadNextFrameFull(pFileReader);
 
     if (result != slapSuccess)
       break;
@@ -119,14 +121,32 @@ int main(int argc, char **argv)
 
     if (result != slapSuccess)
       break;
+#else
+    result = _slapFileReader_ReadNextFrameLowRes(pFileReader);
+
+    if (result != slapSuccess)
+      break;
+
+    result = _slapFileReader_DecodeCurrentFrameLowRes(pFileReader);
+
+    if (result != slapSuccess)
+      break;
+#endif
 
     frameCount++;
 
 #ifdef SAVE_AS_JPEG
     char fname[255];
     sprintf_s(fname, 255, "%s-%" PRIu64 ".jpg", slapFile, frameCount);
+    size_t resX, resY;
 
+#if !DECODE_LOW_RES
+    slapFileReader_GetFrameResolution(pFileReader, &resX, &resY);
     slapWriteJpegFromYUV(fname, pFileReader->pDecodedFrameYUV, 7680, 7680);
+#else
+    slapFileReader_GetLowResFrameResolution(pFileReader, &resX, &resY);
+    slapWriteJpegFromYUV(fname, pFileReader->pDecodedFrameYUV, resX, resY);
+#endif
 #endif
   } while (1);
   

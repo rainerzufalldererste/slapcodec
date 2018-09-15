@@ -16,6 +16,13 @@
 #include <xmmintrin.h>
 #include <emmintrin.h>
 
+#ifdef SSSE3
+#include <tmmintrin.h>
+
+#define SLAP_HIGH_QUALITY_DOWNSCALE 1
+#endif
+
+
 slapResult _slapCompressChannel(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor);
 slapResult _slapCompressYUV420(IN void *pData, IN_OUT void **ppCompressedData, IN_OUT size_t *pCompressedDataSize, const size_t width, const size_t height, const int quality, IN void *pCompressor);
 slapResult _slapDecompressChannel(IN void *pData, IN_OUT void *pCompressedData, const size_t compressedDataSize, const size_t width, const size_t height, IN void *pDecompressor);
@@ -117,7 +124,7 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
   pEncoder->mode.flagsPack = flags;
   pEncoder->quality = 75;
   pEncoder->iframeQuality = 75;
-  pEncoder->lowResQuality = 40;
+  pEncoder->lowResQuality = 85;
   pEncoder->encodingThreads = encodingThreadCount;
 
   pEncoder->lowResX = pEncoder->resX >> 3;
@@ -758,7 +765,32 @@ void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader)
   slapFreePtr(ppFileReader);
 }
 
-slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader)
+slapResult slapFileReader_GetResolution(IN slapFileReader *pFileReader, OUT size_t *pResolutionX, OUT size_t *pResolutionY)
+{
+  if (!pFileReader || !pResolutionX || !pResolutionY)
+    return slapError_ArgumentNull;
+
+  *pResolutionX = pFileReader->pDecoder->resX;
+  *pResolutionY = pFileReader->pDecoder->resY;
+
+  return slapSuccess;
+}
+
+slapResult slapFileReader_GetLowResFrameResolution(IN slapFileReader * pFileReader, OUT size_t * pResolutionX, OUT size_t * pResolutionY)
+{
+  if (!pFileReader || !pResolutionX || !pResolutionY)
+    return slapError_ArgumentNull;
+
+  *pResolutionX = pFileReader->pDecoder->resX >> 3;
+  *pResolutionY = pFileReader->pDecoder->resY >> 3;
+
+  if (pFileReader->pDecoder->mode.flags.stereo)
+    *pResolutionY >>= 1;
+
+  return slapSuccess;
+}
+
+slapResult _slapFileReader_ReadNextFrameFull(IN slapFileReader *pFileReader)
 {
   slapResult result = slapSuccess;
   uint64_t position;
@@ -820,6 +852,89 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
   }
 
   result = slapDecodeFrame(pFileReader->pDecoder, pFileReader->pCurrentFrame, pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV);
+
+  if (result != slapSuccess)
+    goto epilogue;
+
+epilogue:
+  return result;
+}
+
+slapResult _slapFileReader_ReadNextFrameLowRes(IN slapFileReader *pFileReader)
+{
+  slapResult result = slapSuccess;
+  uint64_t position;
+
+  if (!pFileReader)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  if (pFileReader->frameIndex >= pFileReader->preHeaderBlock[SLAP_PRE_HEADER_FRAME_COUNT_INDEX])
+  {
+    result = slapError_EndOfStream;
+    goto epilogue;
+  }
+
+  position = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_OFFSET_INDEX] + pFileReader->headerOffset;
+  pFileReader->currentFrameSize = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * pFileReader->frameIndex + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
+
+  if (pFileReader->currentFrameAllocatedSize < pFileReader->currentFrameSize)
+  {
+    slapRealloc(&pFileReader->pCurrentFrame, uint8_t, pFileReader->currentFrameSize);
+    pFileReader->currentFrameAllocatedSize = pFileReader->currentFrameSize;
+
+    if (!pFileReader->pCurrentFrame)
+    {
+      pFileReader->currentFrameAllocatedSize = 0;
+      result = slapError_MemoryAllocation;
+      goto epilogue;
+    }
+  }
+
+  if (fseek(pFileReader->pFile, (long)position, SEEK_SET))
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+  if (pFileReader->currentFrameSize != fread(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pFileReader->pFile))
+  {
+    result = slapError_FileError;
+    goto epilogue;
+  }
+
+  pFileReader->frameIndex++;
+
+epilogue:
+  return result;
+}
+
+slapResult _slapFileReader_DecodeCurrentFrameLowRes(IN slapFileReader *pFileReader)
+{
+  slapResult result = slapSuccess;
+
+  if (!pFileReader)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  size_t resX, resY;
+  slapFileReader_GetLowResFrameResolution(pFileReader, &resX, &resY);
+
+  if (pFileReader->pDecoder->mode.flags.encoder == 0)
+  {
+    if (tjDecompressToYUV2(pFileReader->pDecoder->pAdditionalData, (unsigned char *)pFileReader->pCurrentFrame, (unsigned long)pFileReader->currentFrameSize, (unsigned char *)pFileReader->pDecodedFrameYUV, (int)resX, 4, (int)resY, TJFLAG_FASTDCT))
+    {
+      slapLog(tjGetErrorStr2(pFileReader->pDecoder->pAdditionalData));
+      result = slapError_Compress_Internal;
+      goto epilogue;
+    }
+  }
+
+  pFileReader->pDecoder->frameIndex++;
 
   if (result != slapSuccess)
     goto epilogue;
@@ -907,6 +1022,10 @@ void _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(IN_OUT void *pLastFrame, 
 
   __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
 
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+  __m128i shuffle = { 0, 7, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 };
+#endif
+
   const size_t stepSize = 2;
   size_t itX = resX / (sizeof(__m128i) * stepSize);
   size_t itY = resY >> 1;
@@ -924,11 +1043,19 @@ void _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(IN_OUT void *pLastFrame, 
 
         // SubBuffer
         {
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          __m128i v = _mm_shuffle_epi8(cb0, shuffle);
+#else
           __m128i v = _mm_srli_si128(cb0, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
 
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          v = _mm_shuffle_epi8(cb1, shuffle);
+#else
           v = _mm_srli_si128(cb1, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
         }
@@ -1027,8 +1154,8 @@ void _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, 
   uint16_t *pSubFrameYUV = (uint16_t *)pLowResData;
   __m128i *pLastFrameYUV = (__m128i *)pLastFrame;
 
-//#define GREATER_OR_EQUAL_TO_6_BLOCKS
-//#define GREATER_OR_EQUAL_TO_8_BLOCKS
+#define GREATER_OR_EQUAL_TO_6_BLOCKS
+#define GREATER_OR_EQUAL_TO_8_BLOCKS
 
   size_t resXdiv16 = resX >> 4;
   size_t halfFrameDiv16Quarter = resXdiv16 * resY >> 3;
@@ -1071,6 +1198,10 @@ void _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, 
 
   __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
 
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+  __m128i shuffle = { 0, 7, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 };
+#endif
+
 #ifdef GREATER_OR_EQUAL_TO_8_BLOCKS
   const size_t stepSize = 4;
 #else
@@ -1101,22 +1232,38 @@ void _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, 
 
         // SubBuffer
         {
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          __m128i v = _mm_shuffle_epi8(cb0, shuffle);
+#else
           __m128i v = _mm_srli_si128(cb0, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
 
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          v = _mm_shuffle_epi8(cb1, shuffle);
+#else
           v = _mm_srli_si128(cb1, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
 
 #ifdef GREATER_OR_EQUAL_TO_6_BLOCKS
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          v = _mm_shuffle_epi8(cb2, shuffle);
+#else
           v = _mm_srli_si128(cb2, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
 #endif
 
 #ifdef GREATER_OR_EQUAL_TO_8_BLOCKS
+#ifdef SLAP_HIGH_QUALITY_DOWNSCALE
+          v = _mm_shuffle_epi8(cb3, shuffle);
+#else
           v = _mm_srli_si128(cb3, 7);
+#endif
           *pSubFrameYUV = *(uint16_t *)&v;
           pSubFrameYUV++;
 #endif

@@ -32,6 +32,9 @@
 #define IN_OUT IN OUT
 #endif // !IN_OUT
 
+// enables prettier downscaling
+#define SSSE3 1
+
 #define slapAlloc(Type, count) (Type *)malloc(sizeof(Type) * (count))
 #define slapRealloc(ptr, Type, count) (*ptr = (Type *)realloc(*ptr, sizeof(Type) * (count)))
 #define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = NULL; } } while (0)
@@ -184,8 +187,14 @@ extern "C" {
   slapFileReader * slapCreateFileReader(const char *filename);
   void slapDestroyFileReader(IN_OUT slapFileReader **ppFileReader);
 
-  slapResult _slapFileReader_ReadNextFrame(IN slapFileReader *pFileReader);
+  slapResult slapFileReader_GetResolution(IN slapFileReader *pFileReader, OUT size_t *pResolutionX, OUT size_t *pResolutionY);
+  slapResult slapFileReader_GetLowResFrameResolution(IN slapFileReader *pFileReader, OUT size_t *pResolutionX, OUT size_t *pResolutionY);
+
+  slapResult _slapFileReader_ReadNextFrameFull(IN slapFileReader *pFileReader);
   slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader);
+
+  slapResult _slapFileReader_ReadNextFrameLowRes(IN slapFileReader *pFileReader);
+  slapResult _slapFileReader_DecodeCurrentFrameLowRes(IN slapFileReader *pFileReader);
 
 #ifdef __cplusplus
 }
