@@ -78,7 +78,10 @@ int main(int argc, char **argv)
     {
       slapMemcpy(pFrame, pFileData, 7680 * 11520);
       slapFileWriter_AddFrameYUV420(pFileWriter, pFrame);
+      printf("\rFrame %" PRIu64 " / %" PRIu64 " processed.", i + 1, frameCount);
     }
+
+    printf("\r");
 
     after = clock();
 
@@ -111,6 +114,15 @@ int main(int argc, char **argv)
 
     if (result != slapSuccess)
       break;
+
+#ifdef SAVE_AS_JPEG
+    char fname0[255];
+    sprintf_s(fname0, 255, "%s-%" PRIu64 ".raw.jpg", slapFile, frameCount);
+
+    FILE *pJPEG = fopen(fname0, "wb");
+    fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pJPEG);
+    fclose(pJPEG);
+#endif
 
     result = _slapFileReader_DecodeCurrentFrameFull(pFileReader);
 
