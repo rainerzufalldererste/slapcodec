@@ -1196,7 +1196,7 @@ void _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, 
   __m128i *pLF3_ = pLF0_ + 3;
 #endif
 
-  __m128i half = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+    __m128i half = { 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118 };
 
 #ifdef SLAP_HIGH_QUALITY_DOWNSCALE
   __m128i shuffle = { 0, 7, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 };
@@ -1446,6 +1446,9 @@ void _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(IN_OUT void *pData, 
     {
       itX >>= 1;
       itY >>= 1;
+
+      __m128i tmp = { 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127 };
+      half = tmp;
     }
 
     pCB0 = pCB0_;
@@ -1525,7 +1528,7 @@ void _slapAddStereoDiffYUV420(IN_OUT void *pData, const size_t resX, const size_
   __m128i *pCB7_ = pCB0_ + 7;
 #endif
 
-  __m128i halfY = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
+  __m128i halfY = { 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118, 118 };
   __m128i halfUV = { 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126, 126 };
 
 #ifdef GREATER_OR_EQUAL_TO_8_BLOCKS

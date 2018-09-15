@@ -107,7 +107,7 @@ int main(int argc, char **argv)
   before = clock();
 
 #define SAVE_AS_JPEG 1
-#define DECODE_LOW_RES 1
+//#define DECODE_LOW_RES 1
 
   do
   {
@@ -141,7 +141,7 @@ int main(int argc, char **argv)
     size_t resX, resY;
 
 #if !DECODE_LOW_RES
-    slapFileReader_GetFrameResolution(pFileReader, &resX, &resY);
+    slapFileReader_GetResolution(pFileReader, &resX, &resY);
     slapWriteJpegFromYUV(fname, pFileReader->pDecodedFrameYUV, 7680, 7680);
 #else
     slapFileReader_GetLowResFrameResolution(pFileReader, &resX, &resY);
