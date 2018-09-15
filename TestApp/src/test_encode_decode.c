@@ -68,7 +68,7 @@ int main(int argc, char **argv)
     printf("Creating File Writer...\n");
     slapFileWriter *pFileWriter = slapCreateFileWriter(slapFile, 7680, 7680, SLAP_FLAG_STEREO);
 
-    frameCount = 10;
+    frameCount = 100;
     printf("Adding %" PRIu64 " frames...\n", frameCount);
 
     pFrame = malloc(7680 * 11520);
@@ -106,7 +106,7 @@ int main(int argc, char **argv)
 
   before = clock();
 
-#define SAVE_AS_JPEG 1
+//#define SAVE_AS_JPEG 1
 
   do
   {
@@ -114,15 +114,6 @@ int main(int argc, char **argv)
 
     if (result != slapSuccess)
       break;
-
-#ifdef SAVE_AS_JPEG
-    char fname0[255];
-    sprintf_s(fname0, 255, "%s-%" PRIu64 ".raw.jpg", slapFile, frameCount);
-
-    FILE *pJPEG = fopen(fname0, "wb");
-    fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pJPEG);
-    fclose(pJPEG);
-#endif
 
     result = _slapFileReader_DecodeCurrentFrameFull(pFileReader);
 
