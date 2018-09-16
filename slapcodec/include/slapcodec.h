@@ -172,14 +172,15 @@ extern "C" {
   slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
   void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder);
 
-  slapResult slapDecodeFrameYUV(IN slapDecoder *pDecoder, const size_t decoderIndex, IN void *pData, const size_t length, IN_OUT void *pYUVData);
+  slapResult slapDecoder_DecodeSubFrame(IN slapDecoder *pDecoder, const size_t decoderIndex, IN void **ppCompressedData, IN size_t *pLength, IN_OUT void *pYUVData);
+  slapResult slapDecoder_FinalizeFrame(IN slapDecoder *pDecoder, IN void *pData, const size_t length, IN_OUT void *pYUVData);
 
   typedef struct slapFileReader
   {
     FILE *pFile;
-    void **ppCurrentFrame;
-    size_t *pCurrentFrameAllocatedSize;
-    size_t *pCurrentFrameSize;
+    void *pCurrentFrame;
+    size_t currentFrameAllocatedSize;
+    size_t currentFrameSize;
 
     void *pDecodedFrameYUV;
 

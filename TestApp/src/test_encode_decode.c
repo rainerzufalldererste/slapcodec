@@ -121,6 +121,14 @@ int main(int argc, char **argv)
 
     if (result != slapSuccess)
       break;
+
+    char fname0[255];
+    sprintf_s(fname0, 255, "%s-%" PRIu64 ".raw.jpg", slapFile, frameCount);
+
+    FILE *pRAW = fopen(fname0, "wb");
+    fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pRAW);
+    fclose(pRAW);
+
 #else
     result = _slapFileReader_ReadNextFrameLowRes(pFileReader);
 
