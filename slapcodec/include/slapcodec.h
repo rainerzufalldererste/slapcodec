@@ -64,6 +64,7 @@ extern "C" {
   slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY);
 
 #define SLAP_SUB_BUFFER_COUNT 1
+#define SLAP_LOW_RES_BUFFER_INDEX SLAP_SUB_BUFFER_COUNT
 
 #define SLAP_FLAG_STEREO 1
 
@@ -98,7 +99,8 @@ extern "C" {
     void **ppEncoderInternal;
     void **ppLowResEncoderInternal;
     void **ppDecoderInternal;
-    unsigned long compressedSubBufferSize[SLAP_SUB_BUFFER_COUNT];
+    void **ppCompressedBuffers;
+    size_t compressedSubBufferSizes[SLAP_SUB_BUFFER_COUNT + 1];
   } slapEncoder;
 
   slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
@@ -106,8 +108,14 @@ extern "C" {
 
   slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder);
 
-  // @param *ppCompressedData: should be NULL on when the first frame is added.
-  slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize);
+  // After slapEncoder_BeginFrame has finished, the subFrame can be compressed and written.
+  slapResult slapEncoder_BeginFrame(IN slapEncoder *pEncoder, IN void *pData);
+
+  // After slapEncoder_BeginSubFrame has finished, the frame can be written to disk.
+  slapResult slapEncoder_BeginSubFrame(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize, const size_t subFrameIndex);
+  slapResult slapEncoder_EndSubFrame(IN slapEncoder *pEncoder, IN void *pData, const size_t subFrameIndex);
+
+  slapResult slapEncoder_EndFrame(IN slapEncoder *pEncoder, IN void *pData);
 
 #define SLAP_HEADER_BLOCK_SIZE 1024
 
@@ -119,7 +127,7 @@ extern "C" {
 #define SLAP_PRE_HEADER_IFRAME_STEP_INDEX 4
 #define SLAP_PRE_HEADER_CODEC_FLAGS_INDEX 5
 
-#define SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET 2
+#define SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET 4
 #define SLAP_HEADER_PER_FRAME_SIZE (SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + SLAP_SUB_BUFFER_COUNT * 2)
 
 #define SLAP_HEADER_FRAME_OFFSET_INDEX 0

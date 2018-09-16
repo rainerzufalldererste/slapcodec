@@ -33,6 +33,12 @@ void _slapAddStereoDiffYUV420(IN_OUT void *pData, const size_t resX, const size_
 void _slapAddStereoDiffYUV420AndCopyToLastFrame(IN_OUT void *pData, OUT void *pLastFrame, const size_t resX, const size_t resY);
 void _slapAddStereoDiffYUV420AndAddLastFrameDiff(IN_OUT void *pData, OUT void *pLastFrame, const size_t resX, const size_t resY);
 
+typedef struct _slapFrameEncoderBlock
+{
+  size_t frameSize;
+  void *pFrameData;
+} _slapFrameEncoderBlock;
+
 //////////////////////////////////////////////////////////////////////////
 
 void slapMemcpy(OUT void *pDest, IN void *pSrc, const size_t size)
@@ -142,14 +148,14 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
   if (!pEncoder->pLastFrame)
     goto epilogue;
 
-  pEncoder->ppEncoderInternal = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT);
+  pEncoder->ppEncoderInternal = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT + 1);
 
   if (!pEncoder->ppEncoderInternal)
     goto epilogue;
 
-  memset(pEncoder->ppEncoderInternal, 0, sizeof(void *) * SLAP_SUB_BUFFER_COUNT);
+  memset(pEncoder->ppEncoderInternal, 0, sizeof(void *) * (SLAP_SUB_BUFFER_COUNT + 1));
 
-  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT + 1; i++)
   {
     pEncoder->ppEncoderInternal[i] = tjInitCompress();
 
@@ -174,6 +180,13 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
       goto epilogue;
   }
 
+  pEncoder->ppCompressedBuffers = slapAlloc(void *, SLAP_SUB_BUFFER_COUNT + 1);
+
+  if (!pEncoder->ppCompressedBuffers)
+    goto epilogue;
+
+  memset(pEncoder->ppCompressedBuffers, 0, sizeof(void *) * (SLAP_SUB_BUFFER_COUNT + 1));
+
   return pEncoder;
 
 epilogue:
@@ -182,7 +195,7 @@ epilogue:
 
   if (pEncoder->ppEncoderInternal)
   {
-    for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+    for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT + 1; i++)
       if (pEncoder->ppEncoderInternal[i])
         tjDestroy(pEncoder->ppEncoderInternal[i]);
 
@@ -204,6 +217,9 @@ epilogue:
   if ((pEncoder)->pLastFrame)
     slapFreePtr(&(pEncoder)->pLastFrame);
 
+  if ((pEncoder)->ppCompressedBuffers)
+    slapFreePtr(&(pEncoder)->ppCompressedBuffers);
+
   slapFreePtr(&pEncoder);
 
   return NULL;
@@ -215,7 +231,7 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
   {
     if ((*ppEncoder)->ppEncoderInternal)
     {
-      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+      for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT + 1; i++)
         if ((*ppEncoder)->ppEncoderInternal[i])
           tjDestroy((*ppEncoder)->ppEncoderInternal[i]);
 
@@ -234,6 +250,9 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
       slapFreePtr(&(*ppEncoder)->ppDecoderInternal);
     }
 
+    if ((*ppEncoder)->ppCompressedBuffers)
+      slapFreePtr(&(*ppEncoder)->ppCompressedBuffers);
+
     if ((*ppEncoder)->pLowResData)
       slapFreePtr(&(*ppEncoder)->pLowResData);
 
@@ -251,11 +270,11 @@ slapResult slapFinalizeEncoder(IN slapEncoder *pEncoder)
   return slapSuccess;
 }
 
-slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize)
+slapResult slapEncoder_BeginFrame(IN slapEncoder *pEncoder, IN void *pData)
 {
   slapResult result = slapSuccess;
 
-  if (!pEncoder || !pData || !ppCompressedData || !pSize)
+  if (!pEncoder || !pData)
   {
     result = slapError_ArgumentNull;
     goto epilogue;
@@ -267,38 +286,83 @@ slapResult slapEncoder_AddFrameYUV420(IN slapEncoder *pEncoder, IN void *pData, 
       _slapLastFrameDiffAndStereoDiffAndSubBufferYUV420(pEncoder->pLastFrame, pData, pEncoder->pLowResData, pEncoder->resX, pEncoder->resY);
     else
       _slapCopyToLastFrameAndGenSubBufferAndStereoDiffYUV420(pData, pEncoder->pLowResData, pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+  }
 
-    if (tjCompressFromYUV(pEncoder->ppEncoderInternal[0], (unsigned char *)pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJSAMP_420, (unsigned char **)ppCompressedData, &pEncoder->compressedSubBufferSize[0], (pEncoder->frameIndex % pEncoder->iframeStep == 0) ? pEncoder->quality : pEncoder->iframeQuality, TJFLAG_FASTDCT))
-    {
-      slapLog(tjGetErrorStr2(pEncoder->ppEncoderInternal[0]));
-      result = slapError_Compress_Internal;
+epilogue:
+  return result;
+}
+
+slapResult slapEncoder_BeginSubFrame(IN slapEncoder *pEncoder, IN void *pData, OUT void **ppCompressedData, OUT size_t *pSize, const size_t subFrameIndex)
+{
+  slapResult result = slapSuccess;
+
+  if (!pEncoder || !pData || !ppCompressedData || !pSize)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+
+  const size_t subFrameHeight = pEncoder->resY * 3 / 2 / SLAP_SUB_BUFFER_COUNT;
+
+  if (pEncoder->mode.flags.encoder == 0)
+  {
+    result = _slapCompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, &pEncoder->ppCompressedBuffers[subFrameIndex], &pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, (pEncoder->frameIndex % pEncoder->iframeStep == 0) ? pEncoder->quality : pEncoder->iframeQuality, pEncoder->ppEncoderInternal[subFrameIndex]);
+
+    if (result != slapSuccess)
       goto epilogue;
-    }
 
-    *pSize = pEncoder->compressedSubBufferSize[0];
+    *pSize = pEncoder->compressedSubBufferSizes[subFrameIndex];
+    *ppCompressedData = pEncoder->ppCompressedBuffers[subFrameIndex];
+  }
 
+epilogue:
+  return result;
+}
+
+slapResult slapEncoder_EndSubFrame(IN slapEncoder *pEncoder, IN void *pData, const size_t subFrameIndex)
+{
+  slapResult result = slapSuccess;
+
+  const size_t subFrameHeight = pEncoder->resY * 3 / 2 / SLAP_SUB_BUFFER_COUNT;
+  
+  if (pEncoder->mode.flags.encoder == 0)
+  {
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
     {
-      if (tjDecompressToYUV2(pEncoder->ppDecoderInternal[0], *ppCompressedData, pEncoder->compressedSubBufferSize[0], pData, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJFLAG_FASTDCT))
-      {
-        slapLog(tjGetErrorStr2(pEncoder->ppDecoderInternal[0]));
-        result = slapError_Compress_Internal;
-        goto epilogue;
-      }
+      result = _slapDecompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, pEncoder->ppCompressedBuffers[subFrameIndex], pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, pEncoder->ppDecoderInternal[subFrameIndex]);
 
-      _slapAddStereoDiffYUV420AndAddLastFrameDiff(pData, pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+      if (result != slapSuccess)
+        goto epilogue;
     }
     else
     {
-      if (tjDecompressToYUV2(pEncoder->ppDecoderInternal[0], *ppCompressedData, pEncoder->compressedSubBufferSize[0], pEncoder->pLastFrame, (int)pEncoder->resX, 32, (int)pEncoder->resY, TJFLAG_FASTDCT))
-      {
-        slapLog(tjGetErrorStr2(pEncoder->ppDecoderInternal[0]));
-        result = slapError_Compress_Internal;
-        goto epilogue;
-      }
+      result = _slapDecompressChannel(pEncoder->pLastFrame + pEncoder->resX * subFrameHeight * subFrameIndex, pEncoder->ppCompressedBuffers[subFrameIndex], pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, pEncoder->ppDecoderInternal[subFrameIndex]);
 
-      _slapAddStereoDiffYUV420(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+      if (result != slapSuccess)
+        goto epilogue;
     }
+  }
+
+epilogue:
+  return result;
+}
+
+slapResult slapEncoder_EndFrame(IN slapEncoder *pEncoder, IN void *pData)
+{
+  slapResult result = slapSuccess;
+
+  if (!pEncoder)
+  {
+    result = slapError_ArgumentNull;
+    goto epilogue;
+  }
+  
+  if (pEncoder->mode.flags.encoder == 0)
+  {
+    if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
+      _slapAddStereoDiffYUV420AndAddLastFrameDiff(pData, pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
+    else
+      _slapAddStereoDiffYUV420(pEncoder->pLastFrame, pEncoder->resX, pEncoder->resY);
   }
 
   pEncoder->frameIndex++;
@@ -497,13 +561,26 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   fileSize = ftell(pReadFile);
   fseek(pReadFile, 0, SEEK_SET);
 
-  // TODO: do in multiple steps to not consume enormous amounts of memory.
-  slapRealloc(&pData, uint8_t, fileSize);
+  const size_t maxBlockSize = 1024 * 1024 * 64;
+  size_t remainingSize = fileSize;
 
-  if (fileSize != fread(pData, 1, fileSize, pReadFile))
+  slapRealloc(&pData, uint8_t, fileSize < maxBlockSize ? fileSize : maxBlockSize);
+
+  while (remainingSize + maxBlockSize < fileSize)
+  {
+    if (maxBlockSize != fread(pData, 1, maxBlockSize, pReadFile))
+      goto epilogue;
+
+    if (maxBlockSize != fwrite(pData, 1, maxBlockSize, pFile))
+      goto epilogue;
+
+    remainingSize -= maxBlockSize;
+  }
+
+  if (remainingSize != fread(pData, 1, remainingSize, pReadFile))
     goto epilogue;
 
-  if (fileSize != fwrite(pData, 1, fileSize, pFile))
+  if (remainingSize != fwrite(pData, 1, remainingSize, pFile))
     goto epilogue;
 
   fclose(pReadFile);
@@ -529,8 +606,9 @@ epilogue:
 slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData)
 {
   slapResult result = slapSuccess;
-  size_t dataSize = 0;
   size_t filePosition = 0;
+  _slapFrameEncoderBlock subFrames[SLAP_SUB_BUFFER_COUNT];
+  size_t totalFullFrameSize = 0;
 
   if (!pFileWriter || !pData)
   {
@@ -538,49 +616,70 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     goto epilogue;
   }
 
-  result = slapEncoder_AddFrameYUV420(pFileWriter->pEncoder, pData, &pFileWriter->pData, &dataSize);
+  result = slapEncoder_BeginFrame(pFileWriter->pEncoder, pData);
 
   if (result != slapSuccess)
     goto epilogue;
 
-  result = _slapCompressYUV420(pFileWriter->pEncoder->pLowResData, &pFileWriter->pLowResBuffer, &pFileWriter->lowResBufferSize, pFileWriter->pEncoder->lowResX, pFileWriter->pEncoder->lowResY, pFileWriter->pEncoder->lowResQuality, pFileWriter->pEncoder->ppLowResEncoderInternal);
+  // compress sub frame
+  result = _slapCompressYUV420(pFileWriter->pEncoder->pLowResData, &pFileWriter->pEncoder->ppCompressedBuffers[SLAP_LOW_RES_BUFFER_INDEX], &pFileWriter->pEncoder->compressedSubBufferSizes[SLAP_LOW_RES_BUFFER_INDEX], pFileWriter->pEncoder->lowResX, pFileWriter->pEncoder->lowResY, pFileWriter->pEncoder->lowResQuality, pFileWriter->pEncoder->ppEncoderInternal[SLAP_LOW_RES_BUFFER_INDEX]);
 
   if (result != slapSuccess)
     goto epilogue;
 
+  // compress full frame
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    result = slapEncoder_BeginSubFrame(pFileWriter->pEncoder, pData, &subFrames[i].pFrameData, &subFrames[i].frameSize, i);
+
+    if (result != slapSuccess)
+      goto epilogue;
+  }
+
+  // save to disk
   filePosition = ftell(pFileWriter->pMainFile);
 
-  if (pFileWriter->lowResBufferSize != fwrite(pFileWriter->pLowResBuffer, 1, pFileWriter->lowResBufferSize, pFileWriter->pMainFile))
+  if ((result = _slapWriteToHeader(pFileWriter, filePosition)) != slapSuccess) goto epilogue;
+  if ((result = _slapWriteToHeader(pFileWriter, pFileWriter->pEncoder->compressedSubBufferSizes[SLAP_LOW_RES_BUFFER_INDEX])) != slapSuccess) goto epilogue;
+
+  if (pFileWriter->pEncoder->compressedSubBufferSizes[SLAP_LOW_RES_BUFFER_INDEX] != fwrite(pFileWriter->pEncoder->ppCompressedBuffers[SLAP_LOW_RES_BUFFER_INDEX], 1, pFileWriter->pEncoder->compressedSubBufferSizes[SLAP_LOW_RES_BUFFER_INDEX], pFileWriter->pMainFile))
   {
     result = slapError_FileError;
     goto epilogue;
   }
 
-  result = _slapWriteToHeader(pFileWriter, filePosition);
-
-  if (result != slapSuccess)
-    goto epilogue;
-
-  result = _slapWriteToHeader(pFileWriter, pFileWriter->lowResBufferSize);
-
-  if (result != slapSuccess)
-    goto epilogue;
-
   filePosition = ftell(pFileWriter->pMainFile);
+  if ((result = _slapWriteToHeader(pFileWriter, filePosition)) != slapSuccess) goto epilogue;
 
-  if (dataSize != fwrite(pFileWriter->pData, 1, dataSize, pFileWriter->pMainFile))
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+    totalFullFrameSize += subFrames[i].frameSize;
+
+  if ((result = _slapWriteToHeader(pFileWriter, totalFullFrameSize)) != slapSuccess) goto epilogue;
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
   {
-    result = slapError_FileError;
-    goto epilogue;
+    filePosition = ftell(pFileWriter->pMainFile);
+    if ((result = _slapWriteToHeader(pFileWriter, filePosition)) != slapSuccess) goto epilogue;
+    if ((result = _slapWriteToHeader(pFileWriter, subFrames[i].frameSize)) != slapSuccess) goto epilogue;
+
+    if (subFrames[i].frameSize != fwrite(subFrames[i].pFrameData, 1, subFrames[i].frameSize, pFileWriter->pMainFile))
+    {
+      result = slapError_FileError;
+      goto epilogue;
+    }
   }
 
-  pFileWriter->frameCount++;
-  result = _slapWriteToHeader(pFileWriter, filePosition);
+  // get ready for next frame
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    result = slapEncoder_EndSubFrame(pFileWriter->pEncoder, pData, i);
 
-  if (result != slapSuccess)
-    goto epilogue;
+    if (result != slapSuccess)
+      goto epilogue;
+  }
 
-  result = _slapWriteToHeader(pFileWriter, dataSize);
+  // finalize frame.
+  result = slapEncoder_EndFrame(pFileWriter->pEncoder, pData);
 
   if (result != slapSuccess)
     goto epilogue;
