@@ -684,6 +684,8 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   if (result != slapSuccess)
     goto epilogue;
 
+  pFileWriter->frameCount++;
+
 epilogue:
   return result;
 }
@@ -1107,7 +1109,7 @@ slapResult _slapCompressChannel(IN void *pData, IN_OUT void **ppCompressedData, 
 {
   unsigned long length = (unsigned long)*pCompressedDataSize;
 
-  if (tjCompress2(pCompressor, (unsigned char *)pData, (int)width, 32, (int)height, TJPF_GRAY, (unsigned char **)ppCompressedData, &length, TJSAMP_GRAY, quality, TJFLAG_FASTDCT))
+  if (tjCompress2(pCompressor, (unsigned char *)pData, (int)width, (int)width, (int)height, TJPF_GRAY, (unsigned char **)ppCompressedData, &length, TJSAMP_GRAY, quality, TJFLAG_FASTDCT))
   {
     slapLog(tjGetErrorStr2(pCompressor));
     return slapError_Compress_Internal;
