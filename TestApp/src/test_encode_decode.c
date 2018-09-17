@@ -68,7 +68,7 @@ int main(int argc, char **argv)
     printf("Creating File Writer...\n");
     slapFileWriter *pFileWriter = slapCreateFileWriter(slapFile, 7680, 7680, SLAP_FLAG_STEREO);
 
-    frameCount = 10;
+    frameCount = 100;
     printf("Adding %" PRIu64 " frames...\n", frameCount);
 
     pFrame = malloc(7680 * 11520);

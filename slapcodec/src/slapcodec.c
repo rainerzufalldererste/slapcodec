@@ -542,7 +542,9 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   FILE *pReadFile = NULL;
   char filenameBuffer[0xFF];
   void *pData = NULL;
-  size_t fileSize = 0;
+  size_t fileSize = 0; 
+  const size_t maxBlockSize = 1024 * 1024 * 64;
+  size_t remainingSize = 0;
 
   if (!pFileWriter)
     goto epilogue;
@@ -605,12 +607,11 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   fileSize = ftell(pReadFile);
   fseek(pReadFile, 0, SEEK_SET);
 
-  const size_t maxBlockSize = 1024 * 1024 * 64;
-  size_t remainingSize = fileSize;
+  remainingSize = fileSize;
 
   slapRealloc(&pData, uint8_t, fileSize < maxBlockSize ? fileSize : maxBlockSize);
 
-  while (remainingSize + maxBlockSize < fileSize)
+  while (remainingSize > maxBlockSize)
   {
     if (maxBlockSize != fread(pData, 1, maxBlockSize, pReadFile))
       goto epilogue;
@@ -709,13 +710,6 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     ThreadPool_JoinTask(tasks[i]);
-
-  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
-  {
-    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallEndSubframe, (void *)&encoderData[i]);
-    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
-  }
-
 #else
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
@@ -766,6 +760,12 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   // get ready for next frame
 #ifdef SLAP_MULTITHREADED
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallEndSubframe, (void *)&encoderData[i]);
+    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
+  }
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     ThreadPool_JoinTask(tasks[i]);

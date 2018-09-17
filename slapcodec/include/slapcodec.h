@@ -65,7 +65,7 @@ extern "C" {
 
   slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY);
 
-#define SLAP_SUB_BUFFER_COUNT 24
+#define SLAP_SUB_BUFFER_COUNT 12
 #define SLAP_LOW_RES_BUFFER_INDEX SLAP_SUB_BUFFER_COUNT
 
 #define SLAP_FLAG_STEREO 1
