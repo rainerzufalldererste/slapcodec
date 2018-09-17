@@ -35,6 +35,8 @@
 // enables prettier downscaling
 #define SSSE3 1
 
+#define SLAP_MULTITHREADED 1
+
 #define slapAlloc(Type, count) (Type *)malloc(sizeof(Type) * (count))
 #define slapRealloc(ptr, Type, count) (*ptr = (Type *)realloc(*ptr, sizeof(Type) * (count)))
 #define slapFreePtr(ptr)  do { if (ptr && *ptr) { free(*ptr); *ptr = NULL; } } while (0)
@@ -63,7 +65,7 @@ extern "C" {
 
   slapResult slapWriteJpegFromYUV(const char *filename, IN void *pData, const size_t resX, const size_t resY);
 
-#define SLAP_SUB_BUFFER_COUNT 1
+#define SLAP_SUB_BUFFER_COUNT 24
 #define SLAP_LOW_RES_BUFFER_INDEX SLAP_SUB_BUFFER_COUNT
 
 #define SLAP_FLAG_STEREO 1
@@ -101,6 +103,7 @@ extern "C" {
     void **ppDecoderInternal;
     void **ppCompressedBuffers;
     size_t compressedSubBufferSizes[SLAP_SUB_BUFFER_COUNT + 1];
+    void *pThreadPoolHandle;
   } slapEncoder;
 
   slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);
@@ -167,6 +170,7 @@ extern "C" {
     void **ppDecoders;
     uint8_t *pLowResData;
     uint8_t *pLastFrame;
+    void *pThreadPoolHandle;
   } slapDecoder;
 
   slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const uint64_t flags);

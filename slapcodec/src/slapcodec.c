@@ -12,6 +12,8 @@
 #include "apex_memmove/apex_memmove.h"
 #include "apex_memmove/apex_memmove.c"
 
+#include "threadpool.h"
+
 #include <intrin.h>
 #include <xmmintrin.h>
 #include <emmintrin.h>
@@ -38,6 +40,25 @@ typedef struct _slapFrameEncoderBlock
   size_t frameSize;
   void *pFrameData;
 } _slapFrameEncoderBlock;
+
+#ifdef SLAP_MULTITHREADED
+typedef struct _slapEncoderSubTaskData0
+{
+  slapEncoder *pEncoder;
+  void *pData;
+  _slapFrameEncoderBlock *pSubFrameEncoderData;
+  size_t index;
+} _slapEncoderSubTaskData0;
+
+typedef struct _slapDecoderSubTaskData0
+{
+  slapDecoder *pDecoder;
+  size_t index;
+  void **pDataAddrs;
+  size_t *pDataSizes;
+  void *pYUVFrame;
+} _slapDecoderSubTaskData0;
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -187,6 +208,13 @@ slapEncoder * slapCreateEncoder(const size_t sizeX, const size_t sizeY, const ui
 
   memset(pEncoder->ppCompressedBuffers, 0, sizeof(void *) * (SLAP_SUB_BUFFER_COUNT + 1));
 
+  const size_t threadCount = ThreadPool_GetSystemThreadCount();
+
+  pEncoder->pThreadPoolHandle = ThreadPool_Init(threadCount);
+
+  if (!pEncoder->pThreadPoolHandle)
+    goto epilogue;
+
   return pEncoder;
 
 epilogue:
@@ -219,6 +247,9 @@ epilogue:
 
   if ((pEncoder)->ppCompressedBuffers)
     slapFreePtr(&(pEncoder)->ppCompressedBuffers);
+
+  if (pEncoder->pThreadPoolHandle)
+    ThreadPool_Destroy(pEncoder->pThreadPoolHandle);
 
   slapFreePtr(&pEncoder);
 
@@ -258,6 +289,9 @@ void slapDestroyEncoder(IN_OUT slapEncoder **ppEncoder)
 
     if ((*ppEncoder)->pLastFrame)
       slapFreePtr(&(*ppEncoder)->pLastFrame);
+
+    if ((*ppEncoder)->pThreadPoolHandle)
+      ThreadPool_Destroy((*ppEncoder)->pThreadPoolHandle);
   }
 
   slapFreePtr(ppEncoder);
@@ -306,7 +340,14 @@ slapResult slapEncoder_BeginSubFrame(IN slapEncoder *pEncoder, IN void *pData, O
 
   if (pEncoder->mode.flags.encoder == 0)
   {
-    result = _slapCompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, &pEncoder->ppCompressedBuffers[subFrameIndex], &pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, (pEncoder->frameIndex % pEncoder->iframeStep == 0) ? pEncoder->quality : pEncoder->iframeQuality, pEncoder->ppEncoderInternal[subFrameIndex]);
+    if (subFrameHeight * subFrameIndex * 2 / 3 < pEncoder->resY)
+    {
+      result = _slapCompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, &pEncoder->ppCompressedBuffers[subFrameIndex], &pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, (pEncoder->frameIndex % pEncoder->iframeStep == 0) ? pEncoder->quality : pEncoder->iframeQuality, pEncoder->ppEncoderInternal[subFrameIndex]);
+    }
+    else
+    {
+      result = _slapCompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, &pEncoder->ppCompressedBuffers[subFrameIndex], &pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX >> 1, subFrameHeight << 1, (pEncoder->frameIndex % pEncoder->iframeStep == 0) ? pEncoder->quality : pEncoder->iframeQuality, pEncoder->ppEncoderInternal[subFrameIndex]);
+    }
 
     if (result != slapSuccess)
       goto epilogue;
@@ -329,7 +370,10 @@ slapResult slapEncoder_EndSubFrame(IN slapEncoder *pEncoder, IN void *pData, con
   {
     if (pEncoder->frameIndex % pEncoder->iframeStep != 0)
     {
-      result = _slapDecompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, pEncoder->ppCompressedBuffers[subFrameIndex], pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, pEncoder->ppDecoderInternal[subFrameIndex]);
+      if (subFrameHeight * subFrameIndex * 2 / 3 < pEncoder->resY)
+        result = _slapDecompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, pEncoder->ppCompressedBuffers[subFrameIndex], pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX, subFrameHeight, pEncoder->ppDecoderInternal[subFrameIndex]);
+      else
+        result = _slapDecompressChannel(((uint8_t *)pData) + subFrameIndex * subFrameHeight * pEncoder->resX, pEncoder->ppCompressedBuffers[subFrameIndex], pEncoder->compressedSubBufferSizes[subFrameIndex], pEncoder->resX >> 1, subFrameHeight << 1, pEncoder->ppDecoderInternal[subFrameIndex]);
 
       if (result != slapSuccess)
         goto epilogue;
@@ -603,12 +647,34 @@ epilogue:
   return result;
 }
 
+#ifdef SLAP_MULTITHREADED
+
+size_t _slapEncoderTask_CallBeginSubframe(void *pData)
+{
+  _slapEncoderSubTaskData0 *pUserData = (_slapEncoderSubTaskData0 *)pData;
+
+  return (size_t)slapEncoder_BeginSubFrame(pUserData->pEncoder, pUserData->pData, &pUserData->pSubFrameEncoderData->pFrameData, &pUserData->pSubFrameEncoderData->frameSize, pUserData->index);
+}
+
+size_t _slapEncoderTask_CallEndSubframe(void *pData)
+{
+  _slapEncoderSubTaskData0 *pUserData = (_slapEncoderSubTaskData0 *)pData;
+
+  return (size_t)slapEncoder_EndSubFrame(pUserData->pEncoder, pUserData->pData, pUserData->index);
+}
+
+#endif
+
 slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void *pData)
 {
   slapResult result = slapSuccess;
   size_t filePosition = 0;
   _slapFrameEncoderBlock subFrames[SLAP_SUB_BUFFER_COUNT];
   size_t totalFullFrameSize = 0;
+#ifdef SLAP_MULTITHREADED
+  ThreadPool_TaskHandle tasks[SLAP_SUB_BUFFER_COUNT];
+  _slapEncoderSubTaskData0 encoderData[SLAP_SUB_BUFFER_COUNT];
+#endif
 
   if (!pFileWriter || !pData)
   {
@@ -628,6 +694,30 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     goto epilogue;
 
   // compress full frame
+#ifdef SLAP_MULTITHREADED
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    encoderData[i].pEncoder = pFileWriter->pEncoder;
+    encoderData[i].pData = pData;
+    encoderData[i].pSubFrameEncoderData = &subFrames[i];
+    encoderData[i].index = i;
+
+    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallBeginSubframe, (void *)&encoderData[i]);
+    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
+  }
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+    ThreadPool_JoinTask(tasks[i]);
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallEndSubframe, (void *)&encoderData[i]);
+    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
+  }
+
+#else
+
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
   {
     result = slapEncoder_BeginSubFrame(pFileWriter->pEncoder, pData, &subFrames[i].pFrameData, &subFrames[i].frameSize, i);
@@ -635,6 +725,8 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     if (result != slapSuccess)
       goto epilogue;
   }
+
+#endif
 
   // save to disk
   filePosition = ftell(pFileWriter->pMainFile);
@@ -673,6 +765,13 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   }
 
   // get ready for next frame
+#ifdef SLAP_MULTITHREADED
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+    ThreadPool_JoinTask(tasks[i]);
+
+#else
+
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
   {
     result = slapEncoder_EndSubFrame(pFileWriter->pEncoder, pData, i);
@@ -680,6 +779,8 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
     if (result != slapSuccess)
       goto epilogue;
   }
+
+#endif
 
   // finalize frame.
   result = slapEncoder_EndFrame(pFileWriter->pEncoder, pData);
@@ -741,6 +842,13 @@ slapDecoder * slapCreateDecoder(const size_t sizeX, const size_t sizeY, const ui
   if (!pDecoder->pLastFrame)
     goto epilogue;
 
+  const size_t threadCount = ThreadPool_GetSystemThreadCount();
+
+  pDecoder->pThreadPoolHandle = ThreadPool_Init(threadCount);
+
+  if (!pDecoder->pThreadPoolHandle)
+    goto epilogue;
+
   return pDecoder;
 
 epilogue:
@@ -758,6 +866,9 @@ epilogue:
 
   if (pDecoder->pLastFrame)
     slapFreePtr(&pDecoder->pLastFrame);
+
+  if (pDecoder->pThreadPoolHandle)
+    ThreadPool_Destroy(pDecoder->pThreadPoolHandle);
 
   slapFreePtr(&pDecoder);
 
@@ -782,6 +893,9 @@ void slapDestroyDecoder(IN_OUT slapDecoder **ppDecoder)
 
     if ((*ppDecoder)->pLastFrame)
       slapFreePtr(&(*ppDecoder)->pLastFrame);
+
+    if ((*ppDecoder)->pThreadPoolHandle)
+      ThreadPool_Destroy((*ppDecoder)->pThreadPoolHandle);
   }
 
   slapFreePtr(ppDecoder);
@@ -796,7 +910,10 @@ slapResult slapDecoder_DecodeSubFrame(IN slapDecoder *pDecoder, const size_t dec
 
   if (pDecoder->mode.flags.encoder == 0)
   {
-    result = _slapDecompressChannel(pOutData, ppCompressedData[decoderIndex], pLength[decoderIndex], pDecoder->resX, subFrameHeight, pDecoder->ppDecoders[decoderIndex]);
+    if (subFrameHeight * decoderIndex * 2 / 3 < pDecoder->resY)
+      result = _slapDecompressChannel(pOutData, ppCompressedData[decoderIndex], pLength[decoderIndex], pDecoder->resX, subFrameHeight, pDecoder->ppDecoders[decoderIndex]);
+    else
+      result = _slapDecompressChannel(pOutData, ppCompressedData[decoderIndex], pLength[decoderIndex], pDecoder->resX >> 1, subFrameHeight << 1, pDecoder->ppDecoders[decoderIndex]);
 
     if (result != slapSuccess)
       goto epilogue;
@@ -979,11 +1096,26 @@ epilogue:
   return result;
 }
 
+#ifdef SLAP_MULTITHREADED
+
+size_t _slapDecoderTask_DecodeSubframe(void *pData)
+{
+  _slapDecoderSubTaskData0 *pUserData = (_slapDecoderSubTaskData0 *)pData;
+
+  return (size_t)slapDecoder_DecodeSubFrame(pUserData->pDecoder, pUserData->index, pUserData->pDataAddrs, pUserData->pDataSizes, pUserData->pYUVFrame);
+}
+
+#endif
+
 slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader)
 {
   slapResult result = slapSuccess;
   void *dataAddrs[SLAP_SUB_BUFFER_COUNT];
   size_t dataSizes[SLAP_SUB_BUFFER_COUNT];
+#ifdef SLAP_MULTITHREADED
+  ThreadPool_TaskHandle taskHandle[SLAP_SUB_BUFFER_COUNT];
+  _slapDecoderSubTaskData0 taskData[SLAP_SUB_BUFFER_COUNT];
+#endif
 
   if (!pFileReader)
   {
@@ -997,8 +1129,27 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
     dataSizes[i] = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * (pFileReader->frameIndex - 1) + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + i * 2 + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
   }
 
+#ifdef SLAP_MULTITHREADED
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    taskData[i].pDataSizes = dataSizes;
+    taskData[i].index = i;
+    taskData[i].pDataAddrs = dataAddrs;
+    taskData[i].pDecoder = pFileReader->pDecoder;
+    taskData[i].pYUVFrame = pFileReader->pDecodedFrameYUV;
+
+    taskHandle[i] = ThreadPool_CreateTask(_slapDecoderTask_DecodeSubframe, (void *)&taskData[i]);
+    ThreadPool_EnqueueTask(pFileReader->pDecoder->pThreadPoolHandle, taskHandle[i]);
+  }
+
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+    ThreadPool_JoinTask(taskHandle[i]);
+
+#else
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     result = slapDecoder_DecodeSubFrame(pFileReader->pDecoder, i, dataAddrs, dataSizes, pFileReader->pDecodedFrameYUV);
+#endif
 
   result = slapDecoder_FinalizeFrame(pFileReader->pDecoder, pFileReader->pCurrentFrame, pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV);
 

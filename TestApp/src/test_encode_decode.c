@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 //#define DECODE_LOW_RES 1
 
 #ifdef SAVE_AS_JPEG
-#define SAVE_INTERNAL_FRAMES
+//#define SAVE_INTERNAL_FRAMES
 #endif
 
   do
@@ -126,12 +126,14 @@ int main(int argc, char **argv)
     if (result != slapSuccess)
       break;
 
+#ifdef SAVE_INTERNAL_FRAMES
     char fname0[255];
     sprintf_s(fname0, 255, "%s-%" PRIu64 ".raw.jpg", slapFile, frameCount);
 
     FILE *pRAW = fopen(fname0, "wb");
     fwrite(pFileReader->pCurrentFrame, 1, pFileReader->currentFrameSize, pRAW);
     fclose(pRAW);
+#endif
 
 #else
     result = _slapFileReader_ReadNextFrameLowRes(pFileReader);
