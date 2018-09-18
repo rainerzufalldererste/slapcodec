@@ -585,11 +585,7 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   if (!pData)
     goto epilogue;
 
-  fseek(pReadFile, 0, SEEK_END);
-  fileSize = ftell(pReadFile);
-  fseek(pReadFile, 0, SEEK_SET);
-
-  if (pFileWriter->headerPosition != (fileSize = fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile)))
+  if (pFileWriter->headerPosition != (fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile)))
     goto epilogue;
 
   ((uint64_t *)pData)[SLAP_PRE_HEADER_HEADER_SIZE_INDEX] = pFileWriter->headerPosition - SLAP_PRE_HEADER_SIZE;
@@ -715,6 +711,12 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     ThreadPool_JoinTask(tasks[i]);
 
+  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
+  {
+    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallEndSubframe, (void *)&encoderData[i]);
+    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
+  }
+
 #else
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
@@ -765,12 +767,6 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   // get ready for next frame
 #ifdef SLAP_MULTITHREADED
-
-  for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
-  {
-    tasks[i] = ThreadPool_CreateTask(_slapEncoderTask_CallEndSubframe, (void *)&encoderData[i]);
-    ThreadPool_EnqueueTask(pFileWriter->pEncoder->pThreadPoolHandle, tasks[i]);
-  }
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     ThreadPool_JoinTask(tasks[i]);
@@ -1112,6 +1108,8 @@ size_t _slapDecoderTask_DecodeSubframe(void *pData)
 
 #endif
 
+#include "time.h"
+
 slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader)
 {
   slapResult result = slapSuccess;
@@ -1133,6 +1131,8 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
     dataAddrs[i] = ((uint8_t *)pFileReader->pCurrentFrame) + pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * (pFileReader->frameIndex - 1) + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + i * 2 + SLAP_HEADER_FRAME_OFFSET_INDEX];
     dataSizes[i] = pFileReader->pHeader[SLAP_HEADER_PER_FRAME_SIZE * (pFileReader->frameIndex - 1) + SLAP_HEADER_PER_FRAME_FULL_FRAME_OFFSET + i * 2 + SLAP_HEADER_FRAME_DATA_SIZE_INDEX];
   }
+
+  clock_t t = clock();
 
 #ifdef SLAP_MULTITHREADED
 
@@ -1156,7 +1156,14 @@ slapResult _slapFileReader_DecodeCurrentFrameFull(IN slapFileReader *pFileReader
     result = slapDecoder_DecodeSubFrame(pFileReader->pDecoder, i, dataAddrs, dataSizes, pFileReader->pDecodedFrameYUV);
 #endif
 
+  t = clock() - t;
+  printf("Decoding part1: %" PRIi32 " ms | ", t);
+  t = clock();
+
   result = slapDecoder_FinalizeFrame(pFileReader->pDecoder, pFileReader->pCurrentFrame, pFileReader->currentFrameSize, pFileReader->pDecodedFrameYUV);
+
+  t = clock() - t;
+  printf("Decoding part2: %" PRIi32 " ms \n", t);
 
   if (result != slapSuccess)
     goto epilogue;
