@@ -9,6 +9,8 @@
 #include "slapcodec.h"
 #include <time.h>
 
+#define ASSERT_SUCCESS(function) do { if ((function) != slapSuccess) __debugbreak(); } while (0)
+
 int main(int argc, char **argv)
 {
   void *pFileData = NULL;
@@ -77,7 +79,7 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < frameCount; i++)
     {
       slapMemcpy(pFrame, pFileData, 7680 * 11520);
-      slapFileWriter_AddFrameYUV420(pFileWriter, pFrame);
+      ASSERT_SUCCESS(slapFileWriter_AddFrameYUV420(pFileWriter, pFrame));
       printf("\rFrame %" PRIu64 " / %" PRIu64 " processed.", i + 1, frameCount);
     }
 
@@ -88,7 +90,7 @@ int main(int argc, char **argv)
     printf("%d ms -> ~%f ms / frame\n", after - before, (after - before) / (float)frameCount);
 
     printf("Finalizing File...\n");
-    slapFinalizeFileWriter(pFileWriter);
+    ASSERT_SUCCESS(slapFinalizeFileWriter(pFileWriter));
 
     printf("Destroying File Writer...\n");
     slapDestroyFileWriter(&pFileWriter);

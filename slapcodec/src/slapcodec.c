@@ -424,7 +424,7 @@ slapResult _slapWriteToHeader(IN slapFileWriter *pFileWriter, const uint64_t dat
 
   if (pFileWriter->frameSizeOffsetIndex >= (uint64_t)SLAP_HEADER_BLOCK_SIZE)
   {
-    if ((size_t)SLAP_HEADER_BLOCK_SIZE != fwrite(pFileWriter->frameSizeOffsets, 1, SLAP_HEADER_BLOCK_SIZE, pFileWriter->pHeaderFile))
+    if ((size_t)SLAP_HEADER_BLOCK_SIZE != fwrite(pFileWriter->frameSizeOffsets, sizeof(uint64_t), SLAP_HEADER_BLOCK_SIZE, pFileWriter->pHeaderFile))
     {
       result = slapError_FileError;
       goto epilogue;
@@ -585,7 +585,11 @@ slapResult slapFinalizeFileWriter(IN slapFileWriter *pFileWriter)
   if (!pData)
     goto epilogue;
 
-  if (pFileWriter->headerPosition != fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile))
+  fseek(pReadFile, 0, SEEK_END);
+  fileSize = ftell(pReadFile);
+  fseek(pReadFile, 0, SEEK_SET);
+
+  if (pFileWriter->headerPosition != (fileSize = fread(pData, sizeof(uint64_t), pFileWriter->headerPosition, pReadFile)))
     goto epilogue;
 
   ((uint64_t *)pData)[SLAP_PRE_HEADER_HEADER_SIZE_INDEX] = pFileWriter->headerPosition - SLAP_PRE_HEADER_SIZE;
@@ -710,6 +714,7 @@ slapResult slapFileWriter_AddFrameYUV420(IN slapFileWriter *pFileWriter, IN void
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
     ThreadPool_JoinTask(tasks[i]);
+
 #else
 
   for (size_t i = 0; i < SLAP_SUB_BUFFER_COUNT; i++)
